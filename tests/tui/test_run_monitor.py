@@ -135,7 +135,10 @@ async def test_run_monitor_streams_scripted_events() -> None:
                 ),
             )
         )
-        await pilot.pause()
+        for _ in range(50):
+            await pilot.pause()
+            if "Fill ord-1" in str(app.query_one("#decision-card", Static).content):
+                break
 
         pipeline = str(app.query_one("#pipeline-rail", Static).content)
         assert "✓ Fetch data" in pipeline
