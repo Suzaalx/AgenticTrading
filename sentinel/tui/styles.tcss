@@ -1,0 +1,138 @@
+Screen {
+    background: $surface;
+    color: $text;
+}
+
+#sentinel-status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+.screen-body {
+    height: 1fr;
+    width: 1fr;
+}
+
+.panel {
+    border: round $primary;
+    padding: 0 1;
+    height: 1fr;
+    min-height: 3;
+}
+
+.panel-title {
+    text-style: bold;
+    height: 1;
+}
+
+#dashboard-top {
+    height: 35%;
+}
+
+#dashboard-middle {
+    height: 40%;
+}
+
+#dashboard-bottom {
+    height: 25%;
+}
+
+#dashboard-summary,
+#dashboard-actions,
+#dashboard-decisions,
+#dashboard-today {
+    width: 35%;
+}
+
+#dashboard-equity-plot,
+#dashboard-positions {
+    width: 65%;
+}
+
+#run-left {
+    width: 28%;
+}
+
+#run-right {
+    width: 72%;
+}
+
+#run-title,
+#decision-card {
+    height: 4;
+}
+
+#report-pane {
+    height: 1fr;
+}
+
+#debate-transcript,
+#risk-debate-transcript,
+#live-feed {
+    height: 7;
+}
+
+#portfolio-stats {
+    height: 4;
+}
+
+#portfolio-tables {
+    height: 40%;
+}
+
+#portfolio-positions,
+#portfolio-closed-trades {
+    width: 1fr;
+}
+
+#portfolio-allocation {
+    height: 8;
+}
+
+#portfolio-charts {
+    height: 1fr;
+}
+
+#portfolio-equity-plot,
+#portfolio-drawdown-plot {
+    width: 1fr;
+}
+
+#history-runs,
+#memory-lessons,
+#backtest-past-results {
+    height: 1fr;
+}
+
+#confirm-modal,
+#help-modal,
+#new-run-modal,
+#backtest-modal {
+    width: 70;
+    height: auto;
+    max-height: 85%;
+    margin: 4 8;
+    padding: 1 2;
+    background: $surface;
+    border: thick $primary;
+}
+
+.modal-title {
+    text-style: bold;
+    height: 1;
+}
+
+.modal-buttons {
+    height: 3;
+    align-horizontal: right;
+}
+
+.form-fields {
+    height: auto;
+}
