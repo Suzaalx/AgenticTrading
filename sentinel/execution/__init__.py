@@ -12,6 +12,7 @@ from sentinel.execution.portfolio import (
     save_positions,
     unrealized_pnl,
 )
+from sentinel.execution.robinhood import RobinhoodCryptoBroker
 
 __all__ = [
     "Broker",
@@ -20,6 +21,7 @@ __all__ = [
     "PaperBroker",
     "PortfolioAccounting",
     "QuoteSource",
+    "RobinhoodCryptoBroker",
     "append_equity_snapshot",
     "apply_fill",
     "load_portfolio",

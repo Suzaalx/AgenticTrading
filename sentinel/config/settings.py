@@ -39,10 +39,21 @@ class DataSettings(BaseSettings):
     news_lookback_days: int = 7
 
 
+class RobinhoodSettings(BaseSettings):
+    enabled: bool = False
+    crypto_only: bool = True
+    api_key_env: str = "ROBINHOOD_API_KEY"
+    private_key_env: str = "ROBINHOOD_PRIVATE_KEY"
+    base_url: str = "https://trading.robinhood.com"
+    allowed_symbols: set[str] = Field(default_factory=lambda: {"BTC-USD", "ETH-USD"})
+    request_timeout_seconds: float = 10.0
+
+
 class ExecutionSettings(BaseSettings):
     slippage_bps: int = 5
     commission_usd: float = 0.0
     starting_cash_usd: float = 10000.0
+    robinhood: RobinhoodSettings = Field(default_factory=RobinhoodSettings)
 
 
 class ScheduleSettings(BaseSettings):
