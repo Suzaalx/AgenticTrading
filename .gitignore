@@ -17,3 +17,7 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+
+# Coverage data
+.coverage
+.coverage.*
