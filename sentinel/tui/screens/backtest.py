@@ -114,6 +114,12 @@ class BacktestScreen(Widget):
             f"annualized {self._float_metric(metrics, 'annualized_return'):+.2%} | "
             f"sharpe {self._float_metric(metrics, 'sharpe'):.2f} | "
             f"max_dd {self._float_metric(metrics, 'max_drawdown'):+.2%}",
+            f"calmar {self._float_metric(metrics, 'calmar'):.2f} | "
+            f"information_ratio {self._float_metric(metrics, 'information_ratio'):.2f} | "
+            f"sharpe_ci [{self._optional_float_metric(metrics, 'bootstrap_sharpe_p05')}, "
+            f"{self._optional_float_metric(metrics, 'bootstrap_sharpe_p95')}] | "
+            f"max_dd_ci [{self._optional_percent_metric(metrics, 'bootstrap_max_drawdown_p05')}, "
+            f"{self._optional_percent_metric(metrics, 'bootstrap_max_drawdown_p95')}]",
             f"win_rate {self._float_metric(metrics, 'win_rate'):.2%} | "
             f"profit_factor {self._float_metric(metrics, 'profit_factor'):.2f} | "
             f"benchmark {metrics.get('benchmark_symbol', '—')} "
@@ -156,6 +162,18 @@ class BacktestScreen(Widget):
             except ValueError:
                 return 0.0
         return 0.0
+
+    @classmethod
+    def _optional_float_metric(cls, metrics: dict[str, object], key: str) -> str:
+        if key not in metrics or metrics[key] is None:
+            return "—"
+        return f"{cls._float_metric(metrics, key):.2f}"
+
+    @classmethod
+    def _optional_percent_metric(cls, metrics: dict[str, object], key: str) -> str:
+        if key not in metrics or metrics[key] is None:
+            return "—"
+        return f"{cls._float_metric(metrics, key):+.2%}"
 
     @staticmethod
     def _list_json(value: object) -> list[object]:

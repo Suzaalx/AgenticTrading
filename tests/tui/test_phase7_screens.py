@@ -48,13 +48,19 @@ def seed_phase7_store() -> None:
         metrics = {
             "total_return": 0.12,
             "annualized_return": 0.20,
+            "calmar": 4.0,
             "sharpe": 1.4,
+            "information_ratio": 0.75,
             "max_drawdown": -0.05,
             "win_rate": 0.6,
             "profit_factor": 1.8,
             "benchmark_symbol": "SPY",
             "benchmark_return": 0.08,
             "alpha": 0.04,
+            "bootstrap_sharpe_p05": 0.8,
+            "bootstrap_sharpe_p95": 1.9,
+            "bootstrap_max_drawdown_p05": -0.08,
+            "bootstrap_max_drawdown_p95": -0.03,
             "trades": [{"symbol": "NVDA", "entry_date": "2026-01-01", "exit_date": "2026-02-01", "pnl": 123.0}],
         }
         equity = [{"date": "2026-01-01", "equity": 10000}, {"date": "2026-02-01", "equity": 11200}]
@@ -92,6 +98,10 @@ async def test_history_backtest_memory_logs_mount_render_and_keys() -> None:
         assert app.query_one("#backtest-past-results", DataTable).row_count == 1
         results = str(app.query_one("#backtest-results", Static).content)
         assert "Metrics" in results
+        assert "calmar 4.00" in results
+        assert "information_ratio 0.75" in results
+        assert "sharpe_ci [0.80, 1.90]" in results
+        assert "max_dd_ci [-8.00%, -3.00%]" in results
         assert "Trades" in results
 
         await pilot.press("f6")
