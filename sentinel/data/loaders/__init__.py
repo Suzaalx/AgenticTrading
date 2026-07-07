@@ -5,6 +5,7 @@ from sentinel.data.loaders.base import (
     FundamentalsLoader,
     MarketDataLoader,
     NewsLoader,
+    ProviderRateLimited,
     empty_ohlcv,
     normalize_ohlcv,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "LocalDataLoader",
     "MarketDataLoader",
     "NewsLoader",
+    "ProviderRateLimited",
     "StooqLoader",
     "YFinanceLoader",
     "YFinanceNewsLoader",

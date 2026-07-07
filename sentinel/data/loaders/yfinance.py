@@ -10,7 +10,7 @@ import pandas as pd
 
 from sentinel.core.models import FundamentalsSnapshot, NewsItem, Quote
 
-from .base import empty_fundamentals, normalize_ohlcv
+from .base import ProviderRateLimited, empty_fundamentals, normalize_ohlcv
 
 
 class YFinanceLoader:
@@ -23,29 +23,51 @@ class YFinanceLoader:
     ) -> pd.DataFrame:
         import yfinance as yf
 
-        ticker = yf.Ticker(symbol)
+        try:
+            ticker = yf.Ticker(symbol)
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
+            raise
         end_exclusive = end + timedelta(days=1)
-        frame = ticker.history(
-            start=start.isoformat(),
-            end=end_exclusive.isoformat(),
-            interval=interval,
-            auto_adjust=False,
-            timeout=8,
-        )
+        try:
+            frame = ticker.history(
+                start=start.isoformat(),
+                end=end_exclusive.isoformat(),
+                interval=interval,
+                auto_adjust=False,
+                timeout=8,
+            )
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
+            raise
         return normalize_ohlcv(frame)
 
     def get_quote(self, symbol: str) -> Quote:
         import yfinance as yf
 
-        ticker = yf.Ticker(symbol)
+        try:
+            ticker = yf.Ticker(symbol)
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
+            raise
         price: object | None = None
         try:
             fast_info = ticker.fast_info
             price = fast_info.get("last_price") if hasattr(fast_info, "get") else None
-        except Exception:
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
             price = None
         if price is None:
-            info = ticker.info
+            try:
+                info = ticker.info
+            except Exception as exc:
+                if _is_yf_rate_limit(exc):
+                    raise ProviderRateLimited(self.name, symbol) from exc
+                raise
             price = info.get("regularMarketPrice") or info.get("currentPrice")
         if price is None:
             today = datetime.now(UTC).date()
@@ -65,7 +87,12 @@ class YFinanceLoader:
         import yfinance as yf
 
         cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
-        raw_items = yf.Ticker(symbol).news or []
+        try:
+            raw_items = yf.Ticker(symbol).news or []
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
+            raise
         items: list[NewsItem] = []
         for raw in raw_items[:limit]:
             item = self._parse_news_item(raw, symbol)
@@ -76,7 +103,12 @@ class YFinanceLoader:
     def get_fundamentals(self, symbol: str) -> FundamentalsSnapshot:
         import yfinance as yf
 
-        info: dict[str, Any] = yf.Ticker(symbol).info or {}
+        try:
+            info: dict[str, Any] = yf.Ticker(symbol).info or {}
+        except Exception as exc:
+            if _is_yf_rate_limit(exc):
+                raise ProviderRateLimited(self.name, symbol) from exc
+            raise
         if not info:
             return empty_fundamentals(symbol, datetime.now(UTC).date())
         return FundamentalsSnapshot(
@@ -144,6 +176,20 @@ def _float_or_none(value: object) -> float | None:
         return float(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _is_yf_rate_limit(exc: BaseException) -> bool:
+    try:
+        from yfinance.exceptions import YFRateLimitError
+    except Exception:
+        YFRateLimitError = None  # type: ignore[assignment]
+    if YFRateLimitError is not None and isinstance(exc, YFRateLimitError):
+        return True
+    class_name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    return class_name == "yfratelimiterror" or (
+        "rate limit" in message or "rate limited" in message or "too many requests" in message
+    )
 
 
 def _parse_datetime(value: object) -> datetime:

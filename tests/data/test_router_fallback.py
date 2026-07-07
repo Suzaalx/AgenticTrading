@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 
-from sentinel.core.models import NewsItem
+from sentinel.core.models import NewsItem, Quote
 from sentinel.data.cache import DiskCache
+from sentinel.data.loaders import ProviderRateLimited, YFinanceLoader
 from sentinel.data.router import DataRouter
 
 
@@ -41,6 +45,35 @@ class StooqFake:
                 "volume": [1000, 1100],
             },
             index=pd.date_range("2025-01-01", periods=2, name="date"),
+        )
+
+
+class RateLimitedYFinanceFake:
+    name = "yfinance"
+
+    def get_ohlcv(
+        self, symbol: str, start: date, end: date, interval: str = "1d"
+    ) -> pd.DataFrame:
+        _ = (start, end, interval)
+        raise ProviderRateLimited(self.name, symbol)
+
+
+class QuoteRateLimitedYFinanceFake:
+    name = "yfinance"
+
+    def get_quote(self, symbol: str) -> Quote:
+        raise ProviderRateLimited(self.name, symbol)
+
+
+class QuoteFallbackFake:
+    name = "stooq"
+
+    def get_quote(self, symbol: str) -> Quote:
+        return Quote(
+            symbol=symbol.upper(),
+            price=Decimal("123.45"),
+            ts=datetime(2026, 1, 1, tzinfo=UTC),
+            source=self.name,
         )
 
 
@@ -112,6 +145,34 @@ def test_router_falls_back_to_stooq_and_records_provider(mode: str) -> None:
     assert router.providers_used["ohlcv:NVDA"] == "stooq"
 
 
+def test_router_warns_and_falls_back_on_provider_rate_limit(caplog: pytest.LogCaptureFixture) -> None:
+    router = DataRouter(loaders=[RateLimitedYFinanceFake(), StooqFake()])
+
+    with caplog.at_level("WARNING"):
+        frame = router.get_ohlcv("NVDA", date(2025, 1, 1), date(2025, 1, 2))
+
+    assert not frame.empty
+    assert router.providers_used["ohlcv:NVDA"] == "stooq"
+    assert any("rate-limited" in note for note in router.notes)
+    assert "yfinance rate-limited for NVDA; falling back" in caplog.text
+
+
+def test_router_quote_warns_and_falls_back_on_provider_rate_limit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    router = DataRouter(loaders=[QuoteRateLimitedYFinanceFake(), QuoteFallbackFake()])
+
+    with caplog.at_level("WARNING"):
+        quote = router.get_quote("NVDA")
+
+    assert quote is not None
+    assert quote.source == "stooq"
+    assert quote.price == Decimal("123.45")
+    assert router.providers_used["quote:NVDA"] == "stooq"
+    assert any("rate-limited" in note for note in router.notes)
+    assert "yfinance rate-limited for NVDA; falling back" in caplog.text
+
+
 def test_router_reuses_cached_ohlcv(tmp_path) -> None:
     loader = CountingYFinanceFake()
     router = DataRouter(loaders=[loader], cache=DiskCache(tmp_path))
@@ -140,3 +201,29 @@ def test_news_chain_omits_plain_yfinance_fallback() -> None:
     assert yfinance_news.calls == 1
     assert plain_yfinance.calls == 0
     assert router.providers_used["news:NVDA"] == "none"
+
+
+def test_yfinance_loader_maps_yf_rate_limit_to_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class YFRateLimitError(RuntimeError):
+        pass
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(self, **kwargs: object) -> pd.DataFrame:
+            _ = kwargs
+            raise YFRateLimitError("Too Many Requests. Rate limited. Try after a while.")
+
+    fake_yfinance = types.SimpleNamespace(Ticker=FakeTicker)
+    fake_exceptions = types.SimpleNamespace(YFRateLimitError=YFRateLimitError)
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yfinance)
+    monkeypatch.setitem(sys.modules, "yfinance.exceptions", fake_exceptions)
+
+    with pytest.raises(ProviderRateLimited) as exc_info:
+        YFinanceLoader().get_ohlcv("NVDA", date(2025, 1, 1), date(2025, 1, 2))
+
+    assert exc_info.value.provider == "yfinance"
+    assert exc_info.value.symbol == "NVDA"

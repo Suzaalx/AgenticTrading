@@ -17,6 +17,7 @@ from sentinel.data.loaders import (
     AlphaVantageLoader,
     FinnhubLoader,
     LocalDataLoader,
+    ProviderRateLimited,
     StooqLoader,
     YFinanceLoader,
     YFinanceNewsLoader,
@@ -76,6 +77,9 @@ class DataRouter:
                 self._store_ohlcv(provider, symbol, start, end, interval, clean)
                 self._record("ohlcv", symbol, provider)
                 return clean
+            except ProviderRateLimited as exc:
+                _record_rate_limit(self.notes, provider, symbol, exc)
+                logger.warning("%s rate-limited for %s; falling back", provider, symbol)
             except Exception as exc:
                 logger.info("%s OHLCV failed for %s: %s", provider, symbol, exc)
         self._record("ohlcv", symbol, "none")
@@ -86,12 +90,16 @@ class DataRouter:
         """Return latest quote, degrading to ``None`` when all providers fail."""
 
         for loader in self._chain(["yfinance", "stooq", "alphavantage", "local"]):
+            provider = cast(str, getattr(loader, "name", "unknown"))
             try:
                 quote = cast(Any, loader).get_quote(symbol)
-                self._record("quote", symbol, cast(str, getattr(loader, "name", "unknown")))
+                self._record("quote", symbol, provider)
                 return quote
+            except ProviderRateLimited as exc:
+                _record_rate_limit(self.notes, provider, symbol, exc)
+                logger.warning("%s rate-limited for %s; falling back", provider, symbol)
             except Exception as exc:
-                logger.info("%s quote failed for %s: %s", getattr(loader, "name", "unknown"), symbol, exc)
+                logger.info("%s quote failed for %s: %s", provider, symbol, exc)
         self._record("quote", symbol, "none")
         self.notes.append(f"quote data unavailable for {symbol}")
         return None
@@ -106,6 +114,10 @@ class DataRouter:
                     continue
                 self._record("news", symbol, cast(str, getattr(loader, "name", "unknown")))
                 return list(news)[:limit]
+            except ProviderRateLimited as exc:
+                provider = cast(str, getattr(loader, "name", "unknown"))
+                _record_rate_limit(self.notes, provider, symbol, exc)
+                logger.warning("%s rate-limited for %s; falling back", provider, symbol)
             except Exception as exc:
                 logger.info("%s news failed for %s: %s", getattr(loader, "name", "unknown"), symbol, exc)
         self._record("news", symbol, "none")
@@ -122,6 +134,10 @@ class DataRouter:
                     continue
                 self._record("fundamentals", symbol, cast(str, getattr(loader, "name", "unknown")))
                 return fundamentals
+            except ProviderRateLimited as exc:
+                provider = cast(str, getattr(loader, "name", "unknown"))
+                _record_rate_limit(self.notes, provider, symbol, exc)
+                logger.warning("%s rate-limited for %s; falling back", provider, symbol)
             except Exception as exc:
                 logger.info(
                     "%s fundamentals failed for %s: %s",
@@ -186,6 +202,20 @@ def _default_loaders(settings: Settings) -> list[object]:
         loaders.append(FinnhubLoader(key_env=settings.data.finnhub_key_env))
     loaders.extend([YFinanceNewsLoader(), LocalDataLoader()])
     return loaders
+
+
+def _record_rate_limit(
+    notes: list[str],
+    provider: str,
+    symbol: str,
+    exc: ProviderRateLimited,
+) -> None:
+    suffix = ""
+    if exc.retry_after_seconds is not None:
+        suffix = f" (retry after {exc.retry_after_seconds:g}s)"
+    note = f"{provider} rate-limited for {symbol}; fell back to next provider{suffix}"
+    if note not in notes:
+        notes.append(note)
 
 
 def _is_crypto(symbol: str, asset_class: str | None) -> bool:

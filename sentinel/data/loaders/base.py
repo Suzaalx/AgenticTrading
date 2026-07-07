@@ -13,6 +13,24 @@ from sentinel.core.models import FundamentalsSnapshot, NewsItem, Quote
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
+class ProviderRateLimited(RuntimeError):
+    """Provider signaled a bounded, retry-later rate limit."""
+
+    def __init__(
+        self,
+        provider: str,
+        symbol: str,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        self.provider = provider
+        self.symbol = symbol
+        self.retry_after_seconds = retry_after_seconds
+        message = f"{provider} rate-limited {symbol}"
+        if retry_after_seconds is not None:
+            message = f"{message}; retry after {retry_after_seconds:g}s"
+        super().__init__(message)
+
+
 @runtime_checkable
 class MarketDataLoader(Protocol):
     """Provider capable of loading normalized OHLCV bars and latest quotes."""
