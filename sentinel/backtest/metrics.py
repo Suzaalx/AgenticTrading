@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from sentinel.backtest.bootstrap import bootstrap_return_metrics
+from sentinel.backtest.walkforward import walk_forward_metrics
 from sentinel.core.models import BacktestResult
 
 
@@ -60,6 +61,7 @@ def compute_metrics(
         iterations=bootstrap_iterations,
         seed=bootstrap_seed,
     )
+    walk_forward, walk_forward_consistency = walk_forward_metrics(returns, n_windows=5)
 
     return BacktestResult(
         total_return=total_return,
@@ -86,6 +88,8 @@ def compute_metrics(
         bootstrap_sharpe_p95=bootstrap["sharpe_p95"],
         bootstrap_max_drawdown_p05=bootstrap["max_drawdown_p05"],
         bootstrap_max_drawdown_p95=bootstrap["max_drawdown_p95"],
+        walk_forward=walk_forward or None,
+        walk_forward_consistency=walk_forward_consistency if walk_forward else None,
     )
 
 

@@ -338,6 +338,19 @@ class JournalEntry(SentinelModel):
     reflected_at: datetime | None = None
 
 
+class BacktestWalkForwardWindow(SentinelModel):
+    """One contiguous return window used for backtest robustness checks."""
+
+    window: int
+    start: date | None
+    end: date | None
+    periods: int
+    total_return: float
+    sharpe: float
+    max_drawdown: float
+    consistent: bool
+
+
 class BacktestResult(SentinelModel):
     """Backtest metrics and time series output."""
 
@@ -365,6 +378,8 @@ class BacktestResult(SentinelModel):
     bootstrap_sharpe_p95: float | None = None
     bootstrap_max_drawdown_p05: float | None = None
     bootstrap_max_drawdown_p95: float | None = None
+    walk_forward: list[BacktestWalkForwardWindow] | None = None
+    walk_forward_consistency: float | None = None
 
 
 class Signal(SentinelModel):
