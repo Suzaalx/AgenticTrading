@@ -39,6 +39,29 @@ class DataSettings(BaseSettings):
     news_lookback_days: int = 7
 
 
+class OptionsSettings(BaseSettings):
+    enabled: bool = False
+    commission_per_contract_usd: float = 0.65
+    slippage_half_spread_frac: float = 0.25
+    force_close_dte: int = 1
+    default_risk_free_rate: float = 0.04
+
+
+class BacktestOptionsSettings(BaseSettings):
+    iv_premium_factor: float = 1.1
+    synthetic_half_spread_pct: float = 2.0
+
+
+class BacktestSettings(BaseSettings):
+    options: BacktestOptionsSettings = Field(default_factory=BacktestOptionsSettings)
+
+
+class LiveSettings(BaseSettings):
+    live_order_ttl_minutes: int = 30
+    marketable_limit_buffer_bps: int = 10
+    reconcile_interval_min: int = 5
+
+
 class RobinhoodSettings(BaseSettings):
     enabled: bool = False
     crypto_only: bool = True
@@ -49,11 +72,19 @@ class RobinhoodSettings(BaseSettings):
     request_timeout_seconds: float = 10.0
 
 
+class RobinhoodAgenticSettings(BaseSettings):
+    enabled: bool = False
+    mcp_endpoint_env: str = "RH_AGENTIC_MCP_URL"
+
+
 class ExecutionSettings(BaseSettings):
     slippage_bps: int = 5
     commission_usd: float = 0.0
     starting_cash_usd: float = 10000.0
     robinhood: RobinhoodSettings = Field(default_factory=RobinhoodSettings)
+    robinhood_agentic: RobinhoodAgenticSettings = Field(
+        default_factory=RobinhoodAgenticSettings
+    )
 
 
 class ScheduleSettings(BaseSettings):
@@ -75,6 +106,9 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
     data: DataSettings = Field(default_factory=DataSettings)
+    options: OptionsSettings = Field(default_factory=OptionsSettings)
+    backtest: BacktestSettings = Field(default_factory=BacktestSettings)
+    live: LiveSettings = Field(default_factory=LiveSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
     monitor: MonitorSettings = Field(default_factory=MonitorSettings)

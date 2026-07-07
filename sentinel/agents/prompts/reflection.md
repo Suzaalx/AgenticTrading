@@ -21,6 +21,10 @@ Hard rules:
 - thesis_summary: {thesis_summary}
 - invalidation: {invalidation}
 - horizon_end: {horizon_end}
+- strategy: {strategy}
+- venue: {venue}
+- option_max_loss: {option_max_loss}
+- option_return_on_risk: {option_return_on_risk}
 
 ### REALIZED OUTCOME
 - realized_return: {realized_ret}

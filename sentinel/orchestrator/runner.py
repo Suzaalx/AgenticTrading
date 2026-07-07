@@ -10,17 +10,20 @@ from pathlib import Path
 
 from sentinel.config.settings import Settings, load_mandate, load_settings
 from sentinel.core.bus import EventBus
-from sentinel.core.models import Mandate, RunState
+from sentinel.core.models import Mandate, OptionChainSnapshot, RunState
 from sentinel.data.router import DataRouter
 from sentinel.execution.broker import QuoteSource
 from sentinel.execution.paper import PaperBroker
+from sentinel.execution.router import ExecutionRouter
 from sentinel.llm.budget import assert_within_budget
 from sentinel.llm.contracts import StructuredLLM
 from sentinel.llm.gateway import LLMGateway
+from sentinel.risk.audit import append_audit
+from sentinel.risk.live_mandate import LiveMandate
 from sentinel.store.db import connect, default_db_path, run_migrations
 from sentinel.store.repos.runs_repo import RunRecord, insert_run
 
-from .graph import NODE_ORDER, NodeName, OrchestratorGraph
+from .graph import NODE_ORDER, NodeName, OrchestratorGraph, RouterQuoteSource
 from .state import deserialize_state, initial_state, run_dir, serialize_state
 
 
@@ -113,6 +116,7 @@ class OrchestratorRunner:
         router: DataRouter | None = None,
         quote_source: QuoteSource | None = None,
         broker: PaperBroker | None = None,
+        execution_router: ExecutionRouter | None = None,
         db_path: Path | None = None,
     ) -> None:
         self.bus = bus or EventBus()
@@ -124,6 +128,7 @@ class OrchestratorRunner:
         self.router = router
         self.quote_source = quote_source
         self.broker = broker
+        self.execution_router = execution_router
         self._active_lock = asyncio.Lock()
 
     async def run(
@@ -179,15 +184,21 @@ class OrchestratorRunner:
 
         RunCheckpointStore(run_id).cancel()
 
-    async def run_backtest_step(self, snapshot) -> object:
+    async def run_backtest_step(
+        self,
+        snapshot,
+        *,
+        option_chain: OptionChainSnapshot | None = None,
+    ) -> object:
         """Agent-replay seam: run a single supplied snapshot through post-data nodes."""
 
         state = initial_state(snapshot.symbol, as_of=snapshot.as_of, run_id=snapshot.run_id, mode="backtest_step")
         state.snapshot = snapshot
+        state.option_chain = option_chain
         store = RunCheckpointStore(state.run_id.replace(":", "_"))
         graph = self._graph(store, max_rounds=self.settings.pipeline.max_debate_rounds)
         state = await graph.run(state, start_at="analysts")
-        return state.trade_proposal
+        return state.option_proposal or state.trade_proposal
 
     def _graph(self, store: RunCheckpointStore, *, max_rounds: int) -> OrchestratorGraph:
         return OrchestratorGraph(
@@ -199,11 +210,26 @@ class OrchestratorRunner:
             router=self.router,
             quote_source=self.quote_source,
             broker=self.broker,
+            execution_router=self._execution_router(),
             max_debate_rounds=max_rounds,
             max_risk_rounds=max(1, min(max_rounds, self.settings.pipeline.max_risk_discuss_rounds)),
             checkpoint=store.save,
             cancel_check=lambda run_id: RunCheckpointStore(run_id).is_cancelled(),
         )
+
+    def _execution_router(self) -> ExecutionRouter:
+        if self.execution_router is not None:
+            return self.execution_router
+        quote_source = self.quote_source or RouterQuoteSource(self.router or DataRouter(settings=self.settings))
+        broker = self.broker or PaperBroker(quote_source, bus=self.bus)
+        self.execution_router = ExecutionRouter(
+            paper=broker,
+            crypto=None,
+            agentic=None,
+            live_mandate=LiveMandate(self.mandate),
+            audit=append_audit,
+        )
+        return self.execution_router
 
     def _rounds_for_depth(self, depth: str) -> int:
         return int(self.settings.pipeline.depth_presets.get(depth, self.settings.pipeline.max_debate_rounds))

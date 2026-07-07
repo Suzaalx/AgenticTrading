@@ -28,6 +28,26 @@ starting_cash_usd = 10000.0
 enabled = false
 crypto_only = true
 
+[execution.robinhood_agentic]
+enabled = false
+mcp_endpoint_env = "RH_AGENTIC_MCP_URL"
+
+[options]
+enabled = false
+commission_per_contract_usd = 0.65
+slippage_half_spread_frac = 0.25
+force_close_dte = 1
+default_risk_free_rate = 0.04
+
+[backtest.options]
+iv_premium_factor = 1.1
+synthetic_half_spread_pct = 2.0
+
+[live]
+live_order_ttl_minutes = 30
+marketable_limit_buffer_bps = 10
+reconcile_interval_min = 5
+
 [schedule]
 enabled = false
 decision_cron = "30 9 * * 1-5"

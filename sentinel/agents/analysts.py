@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -17,6 +18,7 @@ from sentinel.core.models import (
     MarketAnalystReport,
     NewsAnalystReport,
     NewsItem,
+    OptionsAnalystReport,
     RunState,
     SentimentAnalystReport,
 )
@@ -156,6 +158,60 @@ class SentimentAnalyst(Agent):
         }
 
 
+class OptionsAnalyst(Agent):
+    """Options-chain analyst using deterministic volatility and liquidity facts."""
+
+    class Payload(AgentPayload):
+        iv_regime: Literal["cheap", "fair", "rich"]
+        expected_move_pct: float
+        skew_note: str
+        event_risk: list[str]
+        confidence: int = Field(ge=0, le=100)
+
+    agent_name: ClassVar[str] = "options_analyst"
+    tier: ClassVar[Literal["quick"]] = "quick"
+    prompt_template: ClassVar[str] = "options_analyst.md"
+    response_schema: ClassVar[type[Payload]] = Payload
+    report_type: ClassVar[type[OptionsAnalystReport]] = OptionsAnalystReport
+
+    async def run(self, state: RunState) -> OptionsAnalystReport:
+        """Return a neutral no-cost report when no option chain is available."""
+
+        if state.option_chain is not None:
+            return await super().run(state)  # type: ignore[return-value]
+        model = self._model_for_start()
+        await self.bus.publish(AgentStarted(run_id=state.run_id, agent=self.agent_name, model=model))
+        report = OptionsAnalystReport(
+            run_id=state.run_id,
+            agent=self.agent_name,
+            model=model,
+            created_at=utc_now(),
+            latency_ms=0,
+            input_tokens=0,
+            output_tokens=0,
+            cost_usd=Decimal("0"),
+            content="No option chain was provided; volatility context defaults to neutral.",
+            iv_regime="fair",
+            expected_move_pct=0.0,
+            skew_note="No option chain provided.",
+            event_risk=[],
+            confidence=0,
+        )
+        await self.bus.publish(AgentCompleted(run_id=state.run_id, report=report))
+        return report
+
+    def build_template_values(self, state: RunState) -> Mapping[str, Any]:
+        if state.option_chain is None:
+            msg = "OptionsAnalyst requires RunState.option_chain"
+            raise ValueError(msg)
+        return {
+            "run_id": state.run_id,
+            "symbol": state.symbol,
+            "as_of": state.as_of.isoformat(),
+            "options_facts": _render_options_facts(state),
+        }
+
+
 def _render_frame(path: str, *, max_rows: int) -> str:
     import pandas as pd
 
@@ -256,3 +312,59 @@ def _render_news(items: list[NewsItem], *, max_items: int) -> str:
     separator = "| --- | --- | --- | --- |"
     body = ["| " + " | ".join(_format_cell(value) for value in row) + " |" for row in rows]
     return "\n".join([header, separator, *body])
+
+
+def _render_options_facts(state: RunState) -> str:
+    chain = state.option_chain
+    if chain is None:
+        return "_No option chain provided._"
+    nearest_expiry = min(chain.expiries, key=lambda expiry: abs((expiry - chain.as_of.date()).days), default=None)
+    dte = max((nearest_expiry - chain.as_of.date()).days, 0) if nearest_expiry else 0
+    atm_iv = chain.atm_iv
+    expected_move = float(chain.spot) * atm_iv * math.sqrt(dte / 365.0) if atm_iv is not None else None
+    expected_move_pct = (expected_move / float(chain.spot) * 100.0) if expected_move is not None and chain.spot else None
+    iv_by_expiry = _average_iv_by_expiry(state)
+    term_slope = None
+    if len(iv_by_expiry) >= 2:
+        ordered = sorted(iv_by_expiry.items(), key=lambda item: item[0])
+        term_slope = ordered[-1][1] - ordered[0][1]
+    put_oi = sum(q.open_interest for q in chain.quotes if q.contract.kind == "put")
+    call_oi = sum(q.open_interest for q in chain.quotes if q.contract.kind == "call")
+    oi_skew = (put_oi / call_oi) if call_oi else None
+    earnings_date = state.snapshot.fundamentals.next_earnings_date if state.snapshot and state.snapshot.fundamentals else None
+    days_to_earnings = (earnings_date - chain.as_of.date()).days if earnings_date else None
+    rows = [
+        ("underlying", chain.underlying),
+        ("spot", chain.spot),
+        ("nearest_expiry", nearest_expiry.isoformat() if nearest_expiry else None),
+        ("nearest_dte", dte),
+        ("atm_iv", atm_iv),
+        ("iv_rank", chain.iv_rank),
+        ("iv_percentile", chain.iv_percentile),
+        ("rv_yang_zhang", chain.rv_yang_zhang),
+        ("iv_minus_rv_yang_zhang", (atm_iv - chain.rv_yang_zhang) if atm_iv is not None and chain.rv_yang_zhang is not None else None),
+        ("term_structure_slope_long_minus_short_iv", term_slope),
+        ("put_open_interest", put_oi),
+        ("call_open_interest", call_oi),
+        ("put_call_oi_skew", oi_skew),
+        ("expected_move_usd", expected_move),
+        ("expected_move_pct", expected_move_pct),
+        ("next_earnings_date", earnings_date.isoformat() if earnings_date else None),
+        ("days_to_next_earnings", days_to_earnings),
+        ("pricing_source", chain.pricing_source),
+    ]
+    body = ["| fact | value |", "| --- | --- |"]
+    body.extend(f"| {name} | {_format_cell(value)} |" for name, value in rows)
+    return "\n".join(body)
+
+
+def _average_iv_by_expiry(state: RunState) -> dict[date, float]:
+    chain = state.option_chain
+    if chain is None:
+        return {}
+    result: dict[date, float] = {}
+    for expiry in chain.expiries:
+        values = [quote.implied_vol for quote in chain.quotes if quote.contract.expiry == expiry and quote.implied_vol is not None]
+        if values:
+            result[expiry] = sum(values) / len(values)
+    return result

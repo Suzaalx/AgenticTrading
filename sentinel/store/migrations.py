@@ -24,6 +24,19 @@ DDL_STATEMENTS: tuple[str, ...] = (
                         equity_json TEXT, created_at TEXT)""",
     """CREATE TABLE IF NOT EXISTS costs     (ts TEXT, run_id TEXT, agent TEXT, model TEXT, tokens_in INT,
                         tokens_out INT, cost_usd REAL)""",
+    """CREATE TABLE IF NOT EXISTS option_positions (position_id TEXT PRIMARY KEY, underlying TEXT,
+                        strategy TEXT, legs_json TEXT, open_premium TEXT, max_loss TEXT, collateral TEXT,
+                        opened_at TEXT, expiry TEXT, horizon_days INT, stop_loss_pct_premium REAL,
+                        take_profit_pct_premium REAL, source_run_id TEXT, venue TEXT)""",
+    """CREATE TABLE IF NOT EXISTS option_chain_meta (run_id TEXT PRIMARY KEY, underlying TEXT,
+                        as_of TEXT, spot TEXT, risk_free_rate REAL, dividend_yield REAL,
+                        expiries_json TEXT, atm_iv REAL, iv_rank REAL, iv_percentile REAL,
+                        rv_yang_zhang REAL, pricing_source TEXT, providers_json TEXT, chain_path TEXT)""",
+    """CREATE TABLE IF NOT EXISTS iv_history (symbol TEXT, date TEXT, atm_iv REAL, rv_yz REAL,
+                        PRIMARY KEY (symbol, date))""",
+    """CREATE TABLE IF NOT EXISTS live_orders (client_order_id TEXT PRIMARY KEY, broker_order_id TEXT,
+                        venue TEXT, status TEXT, submitted_at TEXT, last_sync_at TEXT, raw_json TEXT)""",
+    """CREATE TABLE IF NOT EXISTS reconciliations (ts TEXT, venue TEXT, ok INT, diff_json TEXT)""",
 )
 
 EXPECTED_TABLES: tuple[str, ...] = (
@@ -37,4 +50,9 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "lessons",
     "backtests",
     "costs",
+    "option_positions",
+    "option_chain_meta",
+    "iv_history",
+    "live_orders",
+    "reconciliations",
 )

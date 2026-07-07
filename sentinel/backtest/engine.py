@@ -7,35 +7,58 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 import pandas as pd
 
-from sentinel.backtest.metrics import compute_metrics
+from sentinel.backtest.metrics import SYNTHETIC_BACKTEST_NOTICE, compute_metrics
 from sentinel.backtest.strategies import (
     BuyHoldStrategy,
+    CoveredCallOverwriteStrategy,
+    CSPWheelStrategy,
     RSIMeanRevertStrategy,
     SMACrossStrategy,
     Strategy,
 )
 from sentinel.backtest.strategies.base import BarContext
-from sentinel.config.settings import load_settings
+from sentinel.backtest.synthetic_chain import OptionRuleSignal, SyntheticChainProvider
+from sentinel.config.settings import load_mandate, load_settings
 from sentinel.core.bus import EventBus
 from sentinel.core.events import BacktestProgress
-from sentinel.core.models import BacktestResult, DataSnapshot, Signal
+from sentinel.core.ids import new_id
+from sentinel.core.models import (
+    BacktestResult,
+    DataSnapshot,
+    Fill,
+    OptionChainSnapshot,
+    OptionLeg,
+    OptionPosition,
+    OptionStrategyProposal,
+    Order,
+    Portfolio,
+    Position,
+    Signal,
+)
 from sentinel.data.indicators import compute_indicators
+from sentinel.execution.portfolio import apply_option_fill
 from sentinel.store.db import connect, run_migrations, sentinel_home
 
 BacktestMode = Literal["rule", "agent"]
-AgentDecision = Signal | Mapping[str, Any] | Any
+AgentDecision = Signal | OptionStrategyProposal | Mapping[str, Any] | Any
 
 
 class AgentPipeline(Protocol):
     """Agent replay seam supplied by the future orchestrator."""
 
-    def __call__(self, snapshot: DataSnapshot) -> Awaitable[AgentDecision]:
+    def __call__(
+        self,
+        snapshot: DataSnapshot,
+        *,
+        option_chain: OptionChainSnapshot | None = None,
+    ) -> Awaitable[AgentDecision]:
         """Return a decision from a point-in-time ``DataSnapshot``."""
         ...
 
@@ -63,6 +86,8 @@ class BacktestConfig:
     bt_id: str | None = None
     bootstrap_iterations: int = 1000
     bootstrap_seed: int = 0
+    options_enabled: bool | None = None
+    options_universe: list[str] | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | BacktestConfig) -> BacktestConfig:
@@ -95,13 +120,15 @@ class BacktestConfig:
             "csv_path": str(self.csv_path) if self.csv_path else None,
             "bootstrap_iterations": self.bootstrap_iterations,
             "bootstrap_seed": self.bootstrap_seed,
+            "options_enabled": self.options_enabled,
+            "options_universe": self.options_universe,
         }
 
 
 def run_backtest(
     config: BacktestConfig | Mapping[str, Any],
     *,
-    pipeline: AgentPipeline | Callable[[DataSnapshot], Awaitable[AgentDecision]] | None = None,
+    pipeline: AgentPipeline | Callable[..., Awaitable[AgentDecision]] | None = None,
     event_bus: EventBus | None = None,
 ) -> BacktestResult:
     """Run a backtest synchronously and return ``BacktestResult``."""
@@ -112,7 +139,7 @@ def run_backtest(
 async def run_backtest_async(
     config: BacktestConfig | Mapping[str, Any],
     *,
-    pipeline: AgentPipeline | Callable[[DataSnapshot], Awaitable[AgentDecision]] | None = None,
+    pipeline: AgentPipeline | Callable[..., Awaitable[AgentDecision]] | None = None,
     event_bus: EventBus | None = None,
 ) -> BacktestResult:
     """Run a rule or agent replay backtest."""
@@ -154,7 +181,7 @@ async def _simulate(
     frame: pd.DataFrame,
     raw_frame: pd.DataFrame,
     strategy: Strategy,
-    pipeline: AgentPipeline | Callable[[DataSnapshot], Awaitable[AgentDecision]] | None,
+    pipeline: AgentPipeline | Callable[..., Awaitable[AgentDecision]] | None,
     event_bus: EventBus | None,
     starting_cash: float,
     commission_usd: float,
@@ -173,6 +200,11 @@ async def _simulate(
     entry_date: date | None = None
     entry_index: int | None = None
     pending_signal: Signal | None = None
+    pending_option_signal: OptionRuleSignal | None = None
+    pending_option_proposal: OptionStrategyProposal | None = None
+    option_provider = SyntheticChainProvider(raw_frame, symbol=cfg.symbol)
+    options_active = _options_active_for_config(cfg)
+    option_positions: list[OptionPosition] = []
     trades: list[dict[str, Any]] = []
     equity_curve: list[dict[str, Any]] = []
     exposure_steps = 0
@@ -184,6 +216,47 @@ async def _simulate(
         ts = cast(pd.Timestamp, pd.Timestamp(cast(Any, timestamp)))
         open_price = float(cast(Any, row["open"]))
         close_price = float(cast(Any, row["close"]))
+        if pending_option_signal is not None:
+            option_result = _execute_option_signal(
+                signal=pending_option_signal,
+                symbol=cfg.symbol,
+                ts=ts,
+                open_price=open_price,
+                cash=cash,
+                shares=shares,
+                avg_cost=avg_cost,
+                option_positions=option_positions,
+                provider=option_provider,
+                commission_usd=commission_usd,
+                run_id=bt_id,
+            )
+            cash = option_result.cash
+            shares = option_result.shares
+            avg_cost = option_result.avg_cost
+            option_positions = option_result.option_positions
+            turnover_notional += option_result.turnover_notional
+            trades.extend(option_result.trades)
+            pending_option_signal = None
+        if pending_option_proposal is not None:
+            option_result = _execute_option_proposal(
+                proposal=pending_option_proposal,
+                symbol=cfg.symbol,
+                ts=ts,
+                cash=cash,
+                shares=shares,
+                avg_cost=avg_cost,
+                option_positions=option_positions,
+                provider=option_provider,
+                commission_usd=commission_usd,
+                run_id=bt_id,
+            )
+            cash = option_result.cash
+            shares = option_result.shares
+            avg_cost = option_result.avg_cost
+            option_positions = option_result.option_positions
+            turnover_notional += option_result.turnover_notional
+            trades.extend(option_result.trades)
+            pending_option_proposal = None
         if pending_signal is not None:
             executed = _execute_signal(
                 signal=pending_signal,
@@ -209,7 +282,24 @@ async def _simulate(
             trades.extend(executed.trades)
             pending_signal = None
 
-        equity = cash + (shares * close_price)
+        settlement = _settle_expired_options(
+            symbol=cfg.symbol,
+            ts=ts,
+            close_price=close_price,
+            cash=cash,
+            shares=shares,
+            avg_cost=avg_cost,
+            option_positions=option_positions,
+        )
+        cash = settlement.cash
+        shares = settlement.shares
+        avg_cost = settlement.avg_cost
+        option_positions = settlement.option_positions
+        trades.extend(settlement.trades)
+
+        option_marks = _option_marks(option_provider, ts, option_positions)
+        option_value = _option_position_value(option_positions, option_marks)
+        equity = cash + (shares * close_price) + option_value
         if shares > 0:
             exposure_steps += 1
         equity_curve.append(
@@ -218,11 +308,15 @@ async def _simulate(
                 "equity": equity,
                 "cash": cash,
                 "position_qty": shares,
+                "option_position_count": len(option_positions),
+                "option_value": option_value,
                 "close": close_price,
+                "pricing_notice": SYNTHETIC_BACKTEST_NOTICE if option_positions else None,
             }
         )
 
         if cfg.mode == "rule":
+            _sync_option_strategy(strategy, bool(option_positions), shares)
             history = frame.iloc[: index + 1].copy()
             context = BarContext(
                 symbol=cfg.symbol,
@@ -234,7 +328,11 @@ async def _simulate(
                 position_value=shares * close_price,
                 equity=equity,
             )
-            pending_signal = strategy.on_bar(context)
+            decision = strategy.on_bar(context)
+            if isinstance(decision, OptionRuleSignal):
+                pending_option_signal = decision if decision.action != "HOLD" else None
+            else:
+                pending_signal = decision
         elif _is_cadence_step(index, cfg.cadence):
             snapshot = _build_agent_snapshot(
                 bt_id=bt_id,
@@ -242,8 +340,21 @@ async def _simulate(
                 ts=ts,
                 raw_history=raw_frame.iloc[: index + 1],
             )
-            decision = await cast(Callable[[DataSnapshot], Awaitable[AgentDecision]], pipeline)(snapshot)
-            pending_signal = _decision_to_signal(decision)
+            option_chain = (
+                option_provider.chain_for(ts, run_id=snapshot.run_id)
+                if options_active
+                else None
+            )
+            decision = await _call_agent_pipeline(
+                cast(Callable[..., Awaitable[AgentDecision]], pipeline),
+                snapshot,
+                option_chain=option_chain,
+            )
+            if isinstance(decision, OptionStrategyProposal):
+                pending_option_proposal = decision if decision.action != "HOLD" else None
+                pending_signal = None
+            else:
+                pending_signal = _decision_to_signal(decision)
 
         await _publish_progress(event_bus, bt_id, index + 1, total_steps)
 
@@ -271,6 +382,16 @@ class _ExecutionResult:
     avg_cost: float
     entry_date: date | None
     entry_index: int | None
+    turnover_notional: float
+    trades: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _OptionExecutionResult:
+    cash: float
+    shares: float
+    avg_cost: float
+    option_positions: list[OptionPosition]
     turnover_notional: float
     trades: list[dict[str, Any]]
 
@@ -351,6 +472,477 @@ def _execute_signal(
     )
 
 
+def _execute_option_signal(
+    *,
+    signal: OptionRuleSignal,
+    symbol: str,
+    ts: pd.Timestamp,
+    open_price: float,
+    cash: float,
+    shares: float,
+    avg_cost: float,
+    option_positions: list[OptionPosition],
+    provider: SyntheticChainProvider,
+    commission_usd: float,
+    run_id: str,
+) -> _OptionExecutionResult:
+    if signal.action == "HOLD":
+        return _OptionExecutionResult(cash, shares, avg_cost, option_positions, 0.0, [])
+
+    trades: list[dict[str, Any]] = []
+    turnover = 0.0
+    required_shares = 100 * signal.contracts
+    if signal.action == "OPEN_COVERED_CALL" and shares < required_shares:
+        qty = required_shares - shares
+        notional = qty * open_price
+        if cash < notional + commission_usd:
+            return _OptionExecutionResult(cash, shares, avg_cost, option_positions, 0.0, [])
+        previous_cost = shares * avg_cost
+        cash -= notional + commission_usd
+        shares += qty
+        avg_cost = (previous_cost + notional) / shares
+        turnover += notional
+
+    chain = provider.chain_for(ts, price="open", run_id=f"{run_id}:{ts.date().isoformat()}:open")
+    kind = "call" if signal.action == "OPEN_COVERED_CALL" else "put"
+    quote = _select_delta_quote(chain, kind=kind, target_delta=signal.target_delta, target_dte=signal.target_dte)
+    if quote is None:
+        return _OptionExecutionResult(cash, shares, avg_cost, option_positions, turnover, trades)
+
+    leg = OptionLeg(
+        contract=quote.contract,
+        side="sell",
+        contracts=signal.contracts,
+        limit_price=quote.bid,
+    )
+    premium = -(quote.bid * Decimal(signal.contracts) * Decimal(quote.contract.multiplier))
+    portfolio = _portfolio_from_state(cash, shares, avg_cost, symbol, ts.to_pydatetime().replace(tzinfo=UTC), run_id)
+    order = Order(
+        order_id=new_id(),
+        run_id=run_id,
+        symbol=symbol,
+        side="sell",
+        qty=Decimal(signal.contracts),
+        type="net_credit",
+        reason="agent_decision",
+        created_at=ts.to_pydatetime().replace(tzinfo=UTC),
+        asset_type="option",
+        legs=[leg],
+        strategy="covered_call" if kind == "call" else "cash_secured_put",
+    )
+    fill = Fill(
+        order_id=order.order_id,
+        price=premium,
+        qty=Decimal("1"),
+        ts=order.created_at,
+        slippage_usd=Decimal("0"),
+        commission_usd=Decimal(str(commission_usd)),
+    )
+    try:
+        updated, updated_options, _realized = apply_option_fill(portfolio, option_positions, order, fill)
+    except ValueError:
+        return _OptionExecutionResult(cash, shares, avg_cost, option_positions, turnover, trades)
+
+    credit = float(-premium)
+    trades.append(
+        {
+            "symbol": quote.contract.contract_symbol,
+            "underlying": symbol,
+            "strategy": signal.strategy or ("covered_call_overwrite" if kind == "call" else "csp_wheel"),
+            "option_strategy": order.strategy,
+            "entry_date": ts.date().isoformat(),
+            "entry_price": float(quote.bid),
+            "qty": signal.contracts,
+            "pnl": credit - commission_usd,
+            "premium_captured": credit - commission_usd,
+            "assignments": 0,
+            "pricing_source": chain.pricing_source,
+            "pricing_notice": SYNTHETIC_BACKTEST_NOTICE,
+        }
+    )
+    return _OptionExecutionResult(
+        cash=float(updated.cash),
+        shares=shares,
+        avg_cost=avg_cost,
+        option_positions=updated_options,
+        turnover_notional=turnover + credit,
+        trades=trades,
+    )
+
+
+def _execute_option_proposal(
+    *,
+    proposal: OptionStrategyProposal,
+    symbol: str,
+    ts: pd.Timestamp,
+    cash: float,
+    shares: float,
+    avg_cost: float,
+    option_positions: list[OptionPosition],
+    provider: SyntheticChainProvider,
+    commission_usd: float,
+    run_id: str,
+) -> _OptionExecutionResult:
+    if proposal.action != "OPEN":
+        return _option_hold_result(
+            cash,
+            shares,
+            avg_cost,
+            option_positions,
+            ts,
+            symbol,
+            proposal.strategy,
+            f"unmapped option proposal action: {proposal.action}",
+        )
+    if not _is_mappable_option_proposal(proposal):
+        return _option_hold_result(
+            cash,
+            shares,
+            avg_cost,
+            option_positions,
+            ts,
+            symbol,
+            proposal.strategy,
+            f"unmapped option proposal structure: {proposal.strategy}",
+        )
+
+    chain = provider.chain_for(ts, price="open", run_id=f"{run_id}:{ts.date().isoformat()}:open")
+    quotes = {quote.contract.contract_symbol: quote for quote in chain.quotes}
+    repriced_legs: list[OptionLeg] = []
+    for leg in proposal.legs:
+        quote = quotes.get(leg.contract.contract_symbol)
+        if quote is None:
+            return _option_hold_result(
+                cash,
+                shares,
+                avg_cost,
+                option_positions,
+                ts,
+                symbol,
+                proposal.strategy,
+                f"unmapped option proposal: missing synthetic open quote for {leg.contract.contract_symbol}",
+            )
+        price = quote.ask if leg.side == "buy" else quote.bid
+        repriced_legs.append(
+            leg.model_copy(update={"contract": quote.contract, "limit_price": price})
+        )
+
+    turnover = 0.0
+    if proposal.strategy == "covered_call":
+        contracts = sum(leg.contracts for leg in repriced_legs if leg.side == "sell")
+        required_shares = 100 * contracts
+        if shares < required_shares:
+            open_price = float(chain.spot)
+            qty = required_shares - shares
+            notional = qty * open_price
+            if cash < notional + commission_usd:
+                return _option_hold_result(
+                    cash,
+                    shares,
+                    avg_cost,
+                    option_positions,
+                    ts,
+                    symbol,
+                    proposal.strategy,
+                    "covered-call proposal held: insufficient cash to cover underlying shares",
+                )
+            previous_cost = shares * avg_cost
+            cash -= notional + commission_usd
+            shares += qty
+            avg_cost = (previous_cost + notional) / shares
+            turnover += notional
+
+    premium = sum(
+        (
+            (Decimal("1") if leg.side == "buy" else Decimal("-1"))
+            * (leg.limit_price or Decimal("0"))
+            * Decimal(leg.contracts)
+            * Decimal(leg.contract.multiplier)
+            for leg in repriced_legs
+        ),
+        Decimal("0"),
+    )
+    portfolio = _portfolio_from_state(cash, shares, avg_cost, symbol, ts.to_pydatetime().replace(tzinfo=UTC), run_id)
+    order = Order(
+        order_id=new_id(),
+        run_id=run_id,
+        symbol=symbol,
+        side="buy",
+        qty=Decimal(max((leg.contracts for leg in repriced_legs), default=1)),
+        type="net_debit" if premium >= 0 else "net_credit",
+        reason="agent_decision",
+        created_at=ts.to_pydatetime().replace(tzinfo=UTC),
+        asset_type="option",
+        legs=repriced_legs,
+        strategy=proposal.strategy,
+    )
+    fill = Fill(
+        order_id=order.order_id,
+        price=premium,
+        qty=Decimal("1"),
+        ts=order.created_at,
+        slippage_usd=Decimal("0"),
+        commission_usd=Decimal(str(commission_usd)),
+    )
+    try:
+        updated, updated_options, _realized = apply_option_fill(portfolio, option_positions, order, fill)
+    except ValueError as exc:
+        return _option_hold_result(
+            cash,
+            shares,
+            avg_cost,
+            option_positions,
+            ts,
+            symbol,
+            proposal.strategy,
+            f"option proposal held: {exc}",
+        )
+
+    turnover += abs(float(premium))
+    trades = [
+        {
+            "symbol": symbol,
+            "underlying": symbol,
+            "strategy": proposal.strategy,
+            "option_strategy": proposal.strategy,
+            "entry_date": ts.date().isoformat(),
+            "entry_price": float(premium),
+            "qty": int(order.qty),
+            "pnl": -commission_usd,
+            "premium_captured": max(0.0, float(-premium) - commission_usd),
+            "assignments": 0,
+            "pricing_source": chain.pricing_source,
+            "pricing_notice": SYNTHETIC_BACKTEST_NOTICE,
+        }
+    ]
+    return _OptionExecutionResult(
+        cash=float(updated.cash),
+        shares=shares,
+        avg_cost=avg_cost,
+        option_positions=updated_options,
+        turnover_notional=turnover,
+        trades=trades,
+    )
+
+
+def _is_mappable_option_proposal(proposal: OptionStrategyProposal) -> bool:
+    if not proposal.legs:
+        return False
+    if proposal.strategy in {"long_call", "long_put", "covered_call", "cash_secured_put"}:
+        return len(proposal.legs) == 1
+    if proposal.strategy in {"bull_call_spread", "bear_put_spread", "bull_put_spread", "bear_call_spread"}:
+        return len(proposal.legs) == 2
+    return False
+
+
+def _option_hold_result(
+    cash: float,
+    shares: float,
+    avg_cost: float,
+    option_positions: list[OptionPosition],
+    ts: pd.Timestamp,
+    symbol: str,
+    strategy: str,
+    note: str,
+) -> _OptionExecutionResult:
+    return _OptionExecutionResult(
+        cash=cash,
+        shares=shares,
+        avg_cost=avg_cost,
+        option_positions=option_positions,
+        turnover_notional=0.0,
+        trades=[
+            {
+                "symbol": symbol,
+                "underlying": symbol,
+                "strategy": strategy,
+                "option_strategy": strategy,
+                "entry_date": ts.date().isoformat(),
+                "action": "HOLD",
+                "pnl": 0.0,
+                "premium_captured": 0.0,
+                "assignments": 0,
+                "pricing_source": "synthetic_bsm",
+                "pricing_notice": SYNTHETIC_BACKTEST_NOTICE,
+                "note": note,
+            }
+        ],
+    )
+
+
+@dataclass(frozen=True)
+class _OptionSettlementResult:
+    cash: float
+    shares: float
+    avg_cost: float
+    option_positions: list[OptionPosition]
+    trades: list[dict[str, Any]]
+
+
+def _settle_expired_options(
+    *,
+    symbol: str,
+    ts: pd.Timestamp,
+    close_price: float,
+    cash: float,
+    shares: float,
+    avg_cost: float,
+    option_positions: list[OptionPosition],
+) -> _OptionSettlementResult:
+    remaining: list[OptionPosition] = []
+    trades: list[dict[str, Any]] = []
+    for position in option_positions:
+        if position.expiry > ts.date():
+            remaining.append(position)
+            continue
+        assignments = 0
+        for leg in position.legs:
+            strike = float(leg.contract.strike)
+            qty = leg.contracts * leg.contract.multiplier
+            if leg.side != "sell":
+                continue
+            if leg.contract.kind == "call" and close_price > strike:
+                assigned_qty = min(shares, float(qty))
+                cash += assigned_qty * strike
+                shares -= assigned_qty
+                assignments += 1
+                if shares <= 1e-12:
+                    shares = 0.0
+                    avg_cost = 0.0
+            elif leg.contract.kind == "put" and close_price < strike:
+                notional = float(qty) * strike
+                previous_cost = shares * avg_cost
+                cash -= notional
+                shares += float(qty)
+                avg_cost = (previous_cost + notional) / shares
+                assignments += 1
+        trades.append(
+            {
+                "symbol": symbol,
+                "strategy": str(position.strategy),
+                "exit_date": ts.date().isoformat(),
+                "pnl": 0.0,
+                "premium_captured": 0.0,
+                "assignments": assignments,
+                "pricing_source": "synthetic_bsm",
+                "pricing_notice": SYNTHETIC_BACKTEST_NOTICE,
+            }
+        )
+    return _OptionSettlementResult(cash, shares, avg_cost, remaining, trades)
+
+
+def _portfolio_from_state(
+    cash: float,
+    shares: float,
+    avg_cost: float,
+    symbol: str,
+    opened_at: datetime,
+    run_id: str,
+) -> Portfolio:
+    positions: list[Position] = []
+    if shares > 1e-12:
+        positions.append(
+            Position(
+                symbol=symbol,
+                qty=Decimal(str(shares)),
+                avg_cost=Decimal(str(avg_cost)),
+                stop_loss_pct=None,
+                take_profit_pct=None,
+                opened_at=opened_at,
+                horizon_days=None,
+                source_run_id=run_id,
+            )
+        )
+    return Portfolio(cash=Decimal(str(cash)), positions=positions)
+
+
+def _select_delta_quote(
+    chain: OptionChainSnapshot,
+    *,
+    kind: str,
+    target_delta: float,
+    target_dte: int,
+) -> Any | None:
+    quotes = [
+        quote
+        for quote in chain.quotes
+        if quote.contract.kind == kind and quote.delta is not None and quote.bid > Decimal("0")
+    ]
+    if not quotes:
+        return None
+    as_of = chain.as_of.date()
+    signed_target = target_delta if kind == "call" else -target_delta
+    return min(
+        quotes,
+        key=lambda quote: (
+            abs((quote.contract.expiry - as_of).days - target_dte),
+            abs(float(cast(float, quote.delta)) - signed_target),
+        ),
+    )
+
+
+def _option_marks(
+    provider: SyntheticChainProvider,
+    ts: pd.Timestamp,
+    option_positions: list[OptionPosition],
+) -> dict[str, float]:
+    if not option_positions:
+        return {}
+    chain = provider.chain_for(ts, price="close")
+    return {
+        quote.contract.contract_symbol: (float(quote.bid) + float(quote.ask)) / 2.0
+        for quote in chain.quotes
+    }
+
+
+def _option_position_value(
+    option_positions: list[OptionPosition],
+    marks: dict[str, float],
+) -> float:
+    total = 0.0
+    for position in option_positions:
+        for leg in position.legs:
+            mark = marks.get(leg.contract.contract_symbol)
+            if mark is None:
+                mark = float(leg.limit_price or Decimal("0"))
+            sign = 1.0 if leg.side == "buy" else -1.0
+            total += sign * mark * leg.contracts * leg.contract.multiplier
+    return total
+
+
+def _sync_option_strategy(strategy: Strategy, has_open_options: bool, shares: float) -> None:
+    sync = getattr(strategy, "sync_option_state", None)
+    if callable(sync):
+        sync(has_open_options, shares)
+
+
+async def _call_agent_pipeline(
+    pipeline: Callable[..., Awaitable[AgentDecision]],
+    snapshot: DataSnapshot,
+    *,
+    option_chain: OptionChainSnapshot | None,
+) -> AgentDecision:
+    if option_chain is None:
+        return await pipeline(snapshot)
+    try:
+        return await pipeline(snapshot, option_chain=option_chain)
+    except TypeError:
+        return await pipeline(snapshot)
+
+
+def _options_active_for_config(cfg: BacktestConfig) -> bool:
+    if cfg.options_enabled is False:
+        return False
+    symbol = cfg.symbol.upper()
+    if cfg.options_universe is not None:
+        in_universe = symbol in {item.upper() for item in cfg.options_universe}
+        return bool(cfg.options_enabled) and in_universe
+    mandate = load_mandate(Path.cwd())
+    in_universe = symbol in {item.upper() for item in mandate.options.underlying_universe}
+    enabled = cfg.options_enabled if cfg.options_enabled is not None else mandate.options.enabled
+    return bool(enabled and in_universe)
+
+
 def _load_ohlcv(cfg: BacktestConfig) -> pd.DataFrame:
     if cfg.data is not None:
         return _normalize_frame(cfg.data)
@@ -403,6 +995,10 @@ def _strategy_from_config(cfg: BacktestConfig) -> Strategy:
         return RSIMeanRevertStrategy(**params)
     if name == "buy_hold":
         return BuyHoldStrategy(**params)
+    if name == "covered_call_overwrite":
+        return cast(Strategy, CoveredCallOverwriteStrategy(**params))
+    if name == "csp_wheel":
+        return cast(Strategy, CSPWheelStrategy(**params))
     msg = f"unknown strategy: {cfg.strategy}"
     raise ValueError(msg)
 
@@ -485,7 +1081,7 @@ def _persist_backtest(bt_id: str, cfg: BacktestConfig, result: BacktestResult) -
     conn = connect(cfg.db_path)
     try:
         run_migrations(conn)
-        metrics_json = json.dumps(result.model_dump(mode="json"), allow_nan=True)
+        metrics_json = json.dumps(_result_metrics_dict(result), allow_nan=True)
         equity_json = json.dumps(result.equity_curve, allow_nan=True, default=str)
         conn.execute(
             """INSERT OR REPLACE INTO backtests
@@ -502,3 +1098,11 @@ def _persist_backtest(bt_id: str, cfg: BacktestConfig, result: BacktestResult) -
         conn.commit()
     finally:
         conn.close()
+
+
+def _result_metrics_dict(result: BacktestResult) -> dict[str, Any]:
+    payload = result.model_dump(mode="json")
+    for key in ("premium_captured", "assignments", "win_rate_by_strategy", "pricing_notice"):
+        if key in result.__dict__:
+            payload[key] = result.__dict__[key]
+    return payload

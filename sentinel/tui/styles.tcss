@@ -72,6 +72,18 @@ TabbedContent {
     height: 1fr;
 }
 
+#options-card {
+    height: 6;
+}
+
+#option-candidates {
+    height: 8;
+}
+
+#live-panel {
+    height: 8;
+}
+
 #debate-transcript,
 #risk-debate-transcript,
 #live-feed {
@@ -83,12 +95,30 @@ TabbedContent {
 }
 
 #portfolio-tables {
-    height: 40%;
+    height: 32%;
 }
 
 #portfolio-positions,
 #portfolio-closed-trades {
     width: 1fr;
+}
+
+#portfolio-option-positions {
+    height: 9;
+}
+
+.option-panel {
+    border: round $accent;
+}
+
+.live-panel {
+    border: heavy $error;
+}
+
+.live-badge {
+    background: $error;
+    color: $text;
+    text-style: bold;
 }
 
 #portfolio-allocation {
@@ -113,7 +143,8 @@ TabbedContent {
 #confirm-modal,
 #help-modal,
 #new-run-modal,
-#backtest-modal {
+#backtest-modal,
+#chain-modal {
     width: 70;
     height: auto;
     max-height: 85%;
@@ -135,4 +166,8 @@ TabbedContent {
 
 .form-fields {
     height: auto;
+}
+
+#chain-table {
+    height: 18;
 }

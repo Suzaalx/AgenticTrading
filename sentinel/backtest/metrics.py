@@ -14,6 +14,8 @@ from sentinel.backtest.bootstrap import bootstrap_return_metrics
 from sentinel.backtest.walkforward import walk_forward_metrics
 from sentinel.core.models import BacktestResult
 
+SYNTHETIC_BACKTEST_NOTICE = "synthetic pricing — not indicative of live fills"
+
 
 def compute_metrics(
     *,
@@ -62,8 +64,12 @@ def compute_metrics(
         seed=bootstrap_seed,
     )
     walk_forward, walk_forward_consistency = walk_forward_metrics(returns, n_windows=5)
+    premium_captured = sum(float(trade.get("premium_captured", 0.0)) for trade in trades)
+    assignments = sum(int(trade.get("assignments", 0) or 0) for trade in trades)
+    win_rate_by_strategy = _win_rate_by_strategy(trades)
+    enriched_trades = [_enrich_trade(trade) for trade in trades]
 
-    return BacktestResult(
+    result = BacktestResult(
         total_return=total_return,
         annualized_return=annualized_return,
         calmar=calmar,
@@ -79,7 +85,7 @@ def compute_metrics(
         avg_loss=avg_loss,
         exposure_pct=exposure_pct,
         turnover=turnover,
-        trades=[dict(trade) for trade in trades],
+        trades=enriched_trades,
         equity_curve=[dict(point) for point in equity_curve],
         benchmark_symbol=benchmark_symbol,
         benchmark_return=benchmark_return,
@@ -90,6 +96,14 @@ def compute_metrics(
         bootstrap_max_drawdown_p95=bootstrap["max_drawdown_p95"],
         walk_forward=walk_forward or None,
         walk_forward_consistency=walk_forward_consistency if walk_forward else None,
+    )
+    return result.model_copy(
+        update={
+            "premium_captured": premium_captured,
+            "assignments": assignments,
+            "win_rate_by_strategy": win_rate_by_strategy,
+            "pricing_notice": SYNTHETIC_BACKTEST_NOTICE if premium_captured or assignments else None,
+        }
     )
 
 
@@ -151,6 +165,26 @@ def _profit_factor(wins: Sequence[float], losses: Sequence[float]) -> float:
     if gross_loss == 0.0:
         return math.inf if gross_profit > 0.0 else 0.0
     return gross_profit / gross_loss
+
+
+def _enrich_trade(trade: Mapping[str, Any]) -> dict[str, Any]:
+    enriched = dict(trade)
+    enriched.setdefault("premium_captured", 0.0)
+    enriched.setdefault("assignments", 0)
+    return enriched
+
+
+def _win_rate_by_strategy(trades: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    grouped: dict[str, list[float]] = {}
+    for trade in trades:
+        strategy = trade.get("strategy")
+        if strategy is None or "pnl" not in trade:
+            continue
+        grouped.setdefault(str(strategy), []).append(float(trade["pnl"]))
+    return {
+        strategy: (sum(1 for pnl in pnls if pnl > 0.0) / len(pnls) if pnls else 0.0)
+        for strategy, pnls in grouped.items()
+    }
 
 
 def _benchmark_return(benchmark_prices: pd.DataFrame | pd.Series | None, equity_index: pd.Index) -> float:

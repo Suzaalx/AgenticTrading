@@ -20,7 +20,7 @@ from sentinel.llm.cost import cost_usd, record_cost
 from sentinel.store.db import connect, run_migrations
 
 from .researchers import render_transcript
-from .trader import render_portfolio
+from .trader import render_option_risk_context, render_portfolio
 
 _MAX_TURN_WORDS = 350
 
@@ -63,8 +63,8 @@ class RiskDebater:
     async def run(self, state: RunState, *, round_number: int) -> DebateTurn:
         """Generate one capped risk debate turn."""
 
-        if state.trade_proposal is None:
-            msg = "Risk debate requires RunState.trade_proposal"
+        if state.trade_proposal is None and state.option_proposal is None:
+            msg = "Risk debate requires RunState.trade_proposal or RunState.option_proposal"
             raise ValueError(msg)
         assert_within_budget(self.conn, Decimal(str(self.settings.llm.monthly_budget_usd)))
         model = self._model_for_start()
@@ -108,6 +108,7 @@ class RiskDebater:
 
     def build_prompt(self, state: RunState, *, round_number: int) -> str:
         portfolio = _portfolio_from_state(state) or self.portfolio
+        proposal = state.option_proposal or state.trade_proposal
         template_path = Path(__file__).with_name("prompts") / self.prompt_template
         template = template_path.read_text(encoding="utf-8")
         values = _SafeMapping(
@@ -117,7 +118,8 @@ class RiskDebater:
                 "as_of": state.as_of.isoformat(),
                 "round_number": str(round_number),
                 "investment_plan": _model_json_block(state.investment_plan),
-                "trade_proposal": _model_json_block(state.trade_proposal),
+                "trade_proposal": _model_json_block(proposal),
+                "option_risk_context": render_option_risk_context(state, portfolio),
                 "portfolio_summary": render_portfolio(portfolio),
                 "risk_transcript": render_transcript(state.risk_transcript),
             }

@@ -25,6 +25,7 @@ from sentinel.tui.screens.run import RunMonitorScreen
 from sentinel.tui.widgets.common import money, signed_money
 from sentinel.tui.widgets.modals import (
     BacktestModal,
+    ChainModal,
     ConfirmModal,
     HelpModal,
     NewRunModal,
@@ -40,6 +41,8 @@ TAB_IDS = {
     "f6": "memory",
     "f7": "logs",
 }
+
+TUI_DISCLAIMER = "Research use only; not financial advice. Live losses are yours."
 
 
 class SentinelApp(App[None]):
@@ -60,6 +63,7 @@ class SentinelApp(App[None]):
         Binding("f7", "switch_tab('logs')", "F7 Logs"),
         Binding("r", "new_run", "Run"),
         Binding("b", "new_backtest", "Backtest"),
+        Binding("c", "option_chain", "Chain", priority=True),
         Binding("k", "toggle_kill", "Kill"),
         Binding("question_mark", "help", "Help"),
         Binding("d", "toggle_debate", "Debate"),
@@ -215,6 +219,9 @@ class SentinelApp(App[None]):
     def action_help(self) -> None:
         self.push_screen(HelpModal())
 
+    def action_option_chain(self) -> None:
+        self.push_screen(ChainModal(self.query_one(RunMonitorScreen).run_id))
+
     def action_toggle_debate(self) -> None:
         self.action_switch_tab("run")
         self.query_one(RunMonitorScreen).toggle_debate()
@@ -248,7 +255,8 @@ class SentinelApp(App[None]):
             "Sentinel • [PAPER] • "
             f"{market} {now_et:%H:%M} ET • "
             f"{kill} • "
-            f"{money(self.total_equity)} {signed_money(self.day_pnl)} ({pnl_pct:+.2f}%)"
+            f"{money(self.total_equity)} {signed_money(self.day_pnl)} ({pnl_pct:+.2f}%) • "
+            f"{TUI_DISCLAIMER}"
         )
 
     def _tui_screens(self) -> list[Any]:

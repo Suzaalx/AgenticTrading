@@ -82,9 +82,20 @@ class EquityUpdated(Event):
     day_pnl: Decimal
 
 
+class ReconciliationFailed(Event):
+    venue: str
+    diff: dict[str, Any] = Field(default_factory=dict)
+
+
 class KillSwitchChanged(Event):
     enabled: bool
     actor: str = "system"
+
+
+class KillEngaged(Event):
+    actor: str = "system"
+    cancel_results: dict[str, Any] = Field(default_factory=dict)
+    flatten_results: dict[str, Any] = Field(default_factory=dict)
 
 
 class CostIncurred(Event):

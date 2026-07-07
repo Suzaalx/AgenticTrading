@@ -17,6 +17,9 @@ Hard rules:
 ### TRADE PROPOSAL
 {trade_proposal}
 
+### OPTION RISK CONTEXT
+{option_risk_context}
+
 ### PORTFOLIO SUMMARY
 {portfolio_summary}
 

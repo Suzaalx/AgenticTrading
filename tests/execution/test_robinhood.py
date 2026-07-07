@@ -1,35 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 
 import pytest
 
 from sentinel.config.settings import RobinhoodSettings, load_settings
-from sentinel.core.models import Order
-from sentinel.execution.broker import OrderRejected
-from sentinel.execution.robinhood import RobinhoodCryptoBroker
+from sentinel.execution.robinhood import RobinhoodCryptoBroker, sign_headers
 
-
-class StubClient:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def request(self, *args: object, **kwargs: object) -> None:
-        self.calls += 1
-
-
-def _order(symbol: str = "BTC-USD") -> Order:
-    return Order(
-        order_id=f"order-{symbol}",
-        run_id="run-1",
-        symbol=symbol,
-        side="buy",
-        qty=Decimal("0.01"),
-        type="market",
-        reason="agent_decision",
-        created_at=datetime(2026, 7, 7, 8, 0, tzinfo=UTC),
-    )
+PEM = """-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB
+-----END PRIVATE KEY-----"""
 
 
 def test_constructor_disabled_raises() -> None:
@@ -37,28 +17,24 @@ def test_constructor_disabled_raises() -> None:
         RobinhoodCryptoBroker(RobinhoodSettings(enabled=False))
 
 
-@pytest.mark.asyncio
-async def test_submit_rejects_non_btc_eth_symbol_before_network() -> None:
-    client = StubClient()
-    broker = RobinhoodCryptoBroker(RobinhoodSettings(enabled=True), client=client)
+def test_crypto_signing_golden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBINHOOD_API_KEY", "rh-key")
+    monkeypatch.setenv("ROBINHOOD_PRIVATE_KEY", PEM)
 
-    result = await broker.submit(_order("DOGE-USD"))
+    headers = sign_headers(
+        RobinhoodSettings(enabled=True),
+        "POST",
+        "/api/v1/crypto/trading/orders/",
+        '{"client_order_id":"client-1"}',
+        timestamp=1783440000,
+        clock=lambda: datetime(2026, 7, 7, 12, 0, tzinfo=UTC),
+    )
 
-    assert isinstance(result, OrderRejected)
-    assert result.reason == "unsupported robinhood crypto symbol: DOGE-USD"
-    assert client.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_allowed_submit_and_get_quote_are_inert_stubs() -> None:
-    client = StubClient()
-    broker = RobinhoodCryptoBroker(RobinhoodSettings(enabled=True), client=client)
-
-    with pytest.raises(NotImplementedError, match="not wired"):
-        await broker.submit(_order("BTC-USD"))
-    with pytest.raises(NotImplementedError, match="not wired"):
-        await broker.get_quote("ETH-USD")
-    assert client.calls == 0
+    assert headers == {
+        "x-api-key": "rh-key",
+        "x-signature": "e1mN2MllhaLh8M/ewdNO7fzKK8mA32YQFkLywIaZO4r9vZBpbsuFygN55YUQIVNRia4X33oa3TtxVodMtuDMCQ==",
+        "x-timestamp": "1783440000",
+    }
 
 
 def test_robinhood_settings_default_disabled(tmp_path) -> None:

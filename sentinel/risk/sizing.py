@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import ROUND_FLOOR, Decimal
 
-from sentinel.core.models import Mandate
+from sentinel.core.models import Mandate, OptionPosition, Portfolio
 
 ONE_HUNDRED = Decimal("100")
 CRYPTO_QUANTUM = Decimal("0.000001")
@@ -75,3 +76,40 @@ def size_order(
     if symbol.upper().endswith("-USD"):
         return raw_qty.quantize(CRYPTO_QUANTUM, rounding=ROUND_FLOOR)
     return raw_qty.to_integral_value(rounding=ROUND_FLOOR)
+
+
+def conviction_scaled_budget(conviction: Decimal | float | int) -> Decimal:
+    """Return a deterministic max-loss budget fraction linear in conviction/100."""
+
+    normalized = _non_negative(_decimal(conviction))
+    return min(normalized, ONE_HUNDRED) / ONE_HUNDRED
+
+
+def size_option_order(
+    *,
+    equity: Decimal,
+    mandate: Mandate,
+    conviction: Decimal | float | int,
+    trader_quantity_pct: Decimal | float,
+    approved_quantity_pct: Decimal | float,
+    max_loss_per_1_spread: Decimal,
+) -> int:
+    """Return option contract count sized by max loss rather than notional."""
+
+    if max_loss_per_1_spread <= 0:
+        return 0
+    scaled_budget = (
+        _non_negative(equity)
+        * pm_scale(trader_quantity_pct, approved_quantity_pct)
+        * conviction_scaled_budget(conviction)
+    )
+    budget = min(_decimal(mandate.options.max_loss_per_position_usd), scaled_budget)
+    contracts = (budget / max_loss_per_1_spread).to_integral_value(rounding=ROUND_FLOOR)
+    return int(max(contracts, Decimal("0")))
+
+
+def available_cash(portfolio: Portfolio, option_positions: Sequence[OptionPosition]) -> Decimal:
+    """Return cash not already escrowed as option collateral."""
+
+    escrowed = sum((_non_negative(position.collateral) for position in option_positions), Decimal("0"))
+    return portfolio.cash - escrowed

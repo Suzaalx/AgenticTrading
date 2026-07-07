@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
+from sentinel.core.ids import new_id
+
 
 class SentinelModel(BaseModel):
     """Base model for persisted, cross-package contracts."""
@@ -52,6 +54,98 @@ class FundamentalsSnapshot(SentinelModel):
     analyst_target_mean: float | None
 
 
+OptionKind = Literal["call", "put"]
+OptionStrategyId = Literal[
+    "long_call",
+    "long_put",
+    "covered_call",
+    "cash_secured_put",
+    "bull_call_spread",
+    "bear_put_spread",
+    "bull_put_spread",
+    "bear_call_spread",
+    "long_straddle",
+    "long_strangle",
+    "iron_condor",
+    "calendar_spread",
+]
+
+
+class OptionContract(SentinelModel):
+    """OCC option contract identity."""
+
+    contract_symbol: str
+    underlying: str
+    kind: OptionKind
+    strike: Decimal
+    expiry: date
+    multiplier: int = 100
+
+
+class OptionQuote(SentinelModel):
+    """Point-in-time option quote enriched with local analytics."""
+
+    contract: OptionContract
+    bid: Decimal
+    ask: Decimal
+    last: Decimal | None
+    volume: int
+    open_interest: int
+    implied_vol: float | None
+    ts: datetime
+    source: str
+    model_iv: float | None
+    delta: float | None
+    gamma: float | None
+    vega: float | None
+    theta: float | None
+
+
+class OptionChainSnapshot(SentinelModel):
+    """Pinned option-chain artifact for a decision run."""
+
+    run_id: str
+    underlying: str
+    as_of: datetime
+    spot: Decimal
+    risk_free_rate: float
+    dividend_yield: float
+    expiries: list[date]
+    quotes: list[OptionQuote]
+    atm_iv: float | None
+    iv_rank: float | None
+    iv_percentile: float | None
+    rv_yang_zhang: float | None
+    pricing_source: Literal["live_chain", "synthetic_bsm"]
+    providers_used: dict[str, str]
+
+
+class OptionLeg(SentinelModel):
+    """One leg of an option strategy."""
+
+    contract: OptionContract
+    side: Literal["buy", "sell"]
+    contracts: int
+    limit_price: Decimal | None
+
+
+class OptionStrategyCandidate(SentinelModel):
+    """Deterministic option structure offered to agents."""
+
+    strategy: OptionStrategyId
+    legs: list[OptionLeg]
+    net_premium: Decimal
+    max_loss: Decimal
+    max_gain: Decimal | None
+    breakevens: list[Decimal]
+    est_pop: float | None
+    net_delta: float
+    net_vega: float
+    net_theta: float
+    liquidity_score: float
+    rationale_facts: str
+
+
 class DataSnapshot(SentinelModel):
     """Pinned data inputs for a decision run."""
 
@@ -63,6 +157,7 @@ class DataSnapshot(SentinelModel):
     news: list[NewsItem]
     fundamentals: FundamentalsSnapshot | None
     providers_used: dict[str, str]
+    data_quality: Literal["live", "delayed", "synthetic"] = "live"
 
 
 class AgentReport(SentinelModel):
@@ -116,6 +211,16 @@ class SentimentAnalystReport(AgentReport):
     confidence: int = Field(ge=0, le=100)
 
 
+class OptionsAnalystReport(AgentReport):
+    """Options-chain context report."""
+
+    iv_regime: Literal["cheap", "fair", "rich"]
+    expected_move_pct: float
+    skew_note: str
+    event_risk: list[str]
+    confidence: int = Field(ge=0, le=100)
+
+
 class DebateTurn(SentinelModel):
     """One evidence-based turn in a bull/bear or risk debate."""
 
@@ -156,6 +261,21 @@ class TradeProposal(AgentReport):
         return value
 
 
+class OptionStrategyProposal(AgentReport):
+    """Trader's proposed option action, parallel to TradeProposal."""
+
+    action: Literal["OPEN", "CLOSE", "HOLD"]
+    strategy: OptionStrategyId
+    legs: list[OptionLeg]
+    candidate_id: str
+    max_loss_usd: Decimal
+    time_horizon_days: int
+    entry_rationale: str
+    exit_plan: str
+    stop_loss_pct_premium: float | None
+    take_profit_pct_premium: float | None
+
+
 class PMDecision(AgentReport):
     """Portfolio Manager advisory verdict before deterministic risk gates."""
 
@@ -173,9 +293,30 @@ class Order(SentinelModel):
     symbol: str
     side: Literal["buy", "sell"]
     qty: Decimal
-    type: Literal["market"]
-    reason: Literal["agent_decision", "stop_loss", "take_profit", "time_exit", "manual"]
+    type: Literal["market", "limit", "net_debit", "net_credit"] = "market"
+    reason: Literal[
+        "agent_decision",
+        "stop_loss",
+        "take_profit",
+        "time_exit",
+        "manual",
+        "expiry_settlement",
+    ]
     created_at: datetime
+    asset_type: Literal["equity", "option", "crypto"] = "equity"
+    legs: list[OptionLeg] | None = None
+    strategy: OptionStrategyId | None = None
+    client_order_id: str = Field(default_factory=new_id)
+    venue: Literal["paper", "robinhood_crypto", "robinhood_agentic"] = "paper"
+
+    def __eq__(self, other: object) -> bool:
+        """Compare persisted order fields while legacy repos omit idempotency keys."""
+
+        if not isinstance(other, Order):
+            return NotImplemented
+        return self.model_dump(exclude={"client_order_id"}) == other.model_dump(
+            exclude={"client_order_id"}
+        )
 
 
 class Fill(SentinelModel):
@@ -187,6 +328,8 @@ class Fill(SentinelModel):
     ts: datetime
     slippage_usd: Decimal
     commission_usd: Decimal
+    venue: Literal["paper", "robinhood_crypto", "robinhood_agentic"] = "paper"
+    broker_order_id: str | None = None
 
 
 class Position(SentinelModel):
@@ -207,6 +350,25 @@ class Position(SentinelModel):
         """Position cost basis at average cost."""
 
         return self.qty * self.avg_cost
+
+
+class OptionPosition(SentinelModel):
+    """Open option strategy position."""
+
+    position_id: str
+    underlying: str
+    strategy: OptionStrategyId
+    legs: list[OptionLeg]
+    open_premium: Decimal
+    max_loss: Decimal
+    collateral: Decimal
+    opened_at: datetime
+    expiry: date
+    horizon_days: int | None
+    stop_loss_pct_premium: float | None
+    take_profit_pct_premium: float | None
+    source_run_id: str | None
+    venue: Literal["paper", "robinhood_agentic"] = "paper"
 
 
 class Portfolio(SentinelModel):
@@ -231,6 +393,48 @@ class Portfolio(SentinelModel):
         )
 
 
+class MandateOptions(SentinelModel):
+    """Options mandate constraints."""
+
+    enabled: bool = False
+    underlying_universe: list[str] = Field(
+        default_factory=lambda: ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "SPY", "QQQ"]
+    )
+    defined_risk_only: bool = True
+    max_loss_per_position_usd: float = 500.0
+    max_total_options_max_loss_pct_equity: float = 15.0
+    max_contracts_per_order: int = 10
+    min_open_interest: int = 100
+    max_rel_spread_pct: float = 10.0
+    min_dte: int = 21
+    max_dte: int = 60
+    max_net_portfolio_delta_abs: float = 200.0
+    max_net_portfolio_vega_abs: float = 500.0
+    max_option_orders_per_day: int = 4
+
+    @field_validator("defined_risk_only")
+    @classmethod
+    def _must_be_defined_risk(cls, value: bool) -> bool:
+        if not value:
+            msg = "options.defined_risk_only cannot be disabled"
+            raise ValueError(msg)
+        return value
+
+
+class MandateLive(SentinelModel):
+    """Live-trading mandate overlay."""
+
+    crypto_stage_enabled: bool = False
+    equity_stage_enabled: bool = False
+    options_stage_enabled: bool = False
+    max_live_order_notional_usd: float = 200.0
+    max_live_daily_loss_usd: float = 100.0
+    max_live_orders_per_day: int = 3
+    max_account_allocation_usd: float = 2000.0
+    require_limit_orders: bool = True
+    quote_max_age_seconds: int = 60
+
+
 class Mandate(SentinelModel):
     """Deterministic trading mandate mirrored from mandate.toml."""
 
@@ -242,6 +446,8 @@ class Mandate(SentinelModel):
     max_orders_per_day: int
     allow_short: bool
     cooldown_minutes_per_symbol: int
+    options: MandateOptions = Field(default_factory=MandateOptions)
+    live: MandateLive = Field(default_factory=MandateLive)
 
 
 ViolationCode = Literal[
@@ -253,6 +459,23 @@ ViolationCode = Literal[
     "SHORT_NOT_ALLOWED",
     "KILL_SWITCH",
     "MAX_ORDERS_PER_DAY",
+    "OPTIONS_DISABLED",
+    "NAKED_SHORT_OPTION",
+    "MAX_LOSS_EXCEEDED",
+    "OPTIONS_BUDGET_EXCEEDED",
+    "ILLIQUID_CONTRACT",
+    "DTE_OUT_OF_RANGE",
+    "GREEKS_CAP_EXCEEDED",
+    "UNDERLYING_NOT_ALLOWED",
+    "INSUFFICIENT_COLLATERAL",
+    "EXPIRY_TOO_CLOSE",
+    "LIVE_STAGE_NOT_ENABLED",
+    "LIVE_NOTIONAL_EXCEEDED",
+    "LIVE_DAILY_LOSS_HALT",
+    "LIVE_ORDER_LIMIT",
+    "QUOTE_TOO_OLD",
+    "RECONCILIATION_MISMATCH",
+    "VENUE_CAPABILITY_MISSING",
 ]
 
 
@@ -295,6 +518,9 @@ class RunState(SentinelModel):
     mode: Literal["decision", "backtest_step"]
     status: RunStatus
     snapshot: DataSnapshot | None
+    option_chain: OptionChainSnapshot | None = None
+    option_candidates: list[OptionStrategyCandidate] = Field(default_factory=list)
+    option_proposal: OptionStrategyProposal | None = None
     analyst_reports: dict[str, AgentReport] = Field(default_factory=dict)
     debate_transcript: list[DebateTurn] = Field(default_factory=list)
     investment_plan: InvestmentPlan | None
@@ -326,7 +552,7 @@ class JournalEntry(SentinelModel):
     symbol: str
     date: date
     stance: Literal["bullish", "bearish", "neutral"]
-    action: Literal["BUY", "SELL", "HOLD"]
+    action: Literal["BUY", "SELL", "HOLD", "OPEN_OPTION", "CLOSE_OPTION"]
     conviction: int = Field(ge=0, le=100)
     size: float
     thesis_summary: str
@@ -336,6 +562,8 @@ class JournalEntry(SentinelModel):
     bench_ret: float | None = None
     graded: Literal["good_call", "bad_call", "lucky", "unlucky"] | None = None
     reflected_at: datetime | None = None
+    strategy: OptionStrategyId | None = None
+    venue: str = "paper"
 
 
 class BacktestWalkForwardWindow(SentinelModel):

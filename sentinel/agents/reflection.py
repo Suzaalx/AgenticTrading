@@ -64,6 +64,7 @@ class ReflectionAgent(Agent):
 
     def build_template_values(self, state: RunState) -> Mapping[str, Any]:
         entry = self.journal_entry
+        option_ror = _option_return_on_risk(entry)
         return {
             "run_id": state.run_id,
             "symbol": entry.symbol if entry else state.symbol,
@@ -78,9 +79,22 @@ class ReflectionAgent(Agent):
             "horizon_end": entry.horizon_end.isoformat() if entry and entry.horizon_end else "unknown",
             "realized_ret": _format_return(self.realized_ret),
             "bench_ret": _format_return(self.bench_ret),
+            "strategy": entry.strategy if entry and entry.strategy else "none",
+            "venue": entry.venue if entry else "paper",
+            "option_max_loss": entry.size if entry is not None and _is_option_entry(entry) else "not_applicable",
+            "option_return_on_risk": _format_return(option_ror),
             "benchmark_symbol": self.benchmark_symbol,
             "run_summary": self.run_summary or _summarize_state(state),
         }
+
+    async def run(self, state: RunState) -> ReflectionReport:
+        """Reflect, then deterministically tag and grade option outcomes."""
+
+        report = await super().run(state)
+        if isinstance(report, ReflectionReport) and _is_option_entry(self.journal_entry):
+            report.setup_tags = _option_setup_tags(self.journal_entry, state, report.setup_tags)
+            report.grade = _grade_option_entry(self.journal_entry, self.bench_ret)
+        return report  # type: ignore[return-value]
 
 
 def lesson_from_report(report: ReflectionReport, *, lesson_id: str, symbol: str) -> Lesson:
@@ -103,6 +117,44 @@ def _format_return(value: float | None) -> str:
     return f"{value:.4%}"
 
 
+def _is_option_entry(entry: JournalEntry | None) -> bool:
+    return entry is not None and entry.action in {"OPEN_OPTION", "CLOSE_OPTION"}
+
+
+def _option_return_on_risk(entry: JournalEntry | None) -> float | None:
+    if not _is_option_entry(entry) or entry is None or entry.realized_ret is None or entry.size <= 0:
+        return None
+    return entry.realized_ret / entry.size
+
+
+def _grade_option_entry(entry: JournalEntry | None, bench_ret: float | None) -> LessonGrade:
+    ror = _option_return_on_risk(entry)
+    if ror is None:
+        return "bad_call"
+    benchmark = 0.0 if bench_ret is None else bench_ret
+    if ror >= benchmark and ror >= 0:
+        return "good_call"
+    if ror >= 0:
+        return "unlucky"
+    if benchmark < 0 and ror > benchmark:
+        return "lucky"
+    return "bad_call"
+
+
+def _option_setup_tags(entry: JournalEntry | None, state: RunState, existing: list[str]) -> list[str]:
+    tags = list(dict.fromkeys(existing))
+    iv_rank = state.option_chain.iv_rank if state.option_chain is not None else None
+    iv_label = "mid" if iv_rank is None else "high" if iv_rank >= 0.66 else "low" if iv_rank <= 0.33 else "mid"
+    additions = [f"iv_rank:{iv_label}"]
+    if entry is not None and entry.strategy is not None:
+        additions.append(f"strategy:{entry.strategy}")
+        additions.append(f"venue:{'paper' if entry.venue == 'paper' else 'live'}")
+    for tag in additions:
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
 def _value_or_unknown(obj: object, attr: str) -> object:
     return getattr(obj, attr, "unknown") if obj is not None else "unknown"
 
@@ -116,6 +168,8 @@ def _summarize_state(state: RunState) -> str:
         lines.append(f"Investment plan: {state.investment_plan.content}")
     if state.trade_proposal is not None:
         lines.append(f"Trade proposal: {state.trade_proposal.content}")
+    if state.option_proposal is not None:
+        lines.append(f"Option proposal: {state.option_proposal.content}")
     if state.pm_decision is not None:
         lines.append(f"PM decision: {state.pm_decision.content}")
     if state.error:

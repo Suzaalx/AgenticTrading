@@ -7,3 +7,29 @@ max_daily_loss_pct      = 3.0
 max_orders_per_day      = 10
 allow_short             = false
 cooldown_minutes_per_symbol = 60
+
+[mandate.options]
+enabled = false
+underlying_universe = ["AAPL","MSFT","NVDA","GOOGL","AMZN","SPY","QQQ"]
+defined_risk_only = true
+max_loss_per_position_usd = 500.0
+max_total_options_max_loss_pct_equity = 15.0
+max_contracts_per_order = 10
+min_open_interest = 100
+max_rel_spread_pct = 10.0
+min_dte = 21
+max_dte = 60
+max_net_portfolio_delta_abs = 200.0
+max_net_portfolio_vega_abs = 500.0
+max_option_orders_per_day = 4
+
+[mandate.live]
+crypto_stage_enabled = false
+equity_stage_enabled = false
+options_stage_enabled = false
+max_live_order_notional_usd = 200.0
+max_live_daily_loss_usd = 100.0
+max_live_orders_per_day = 3
+max_account_allocation_usd = 2000.0
+require_limit_orders = true
+quote_max_age_seconds = 60

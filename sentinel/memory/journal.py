@@ -26,6 +26,8 @@ _JOURNAL_COLUMNS: dict[str, str] = {
     "bench_ret": "REAL",
     "graded": "TEXT",
     "reflected_at": "TEXT",
+    "strategy": "TEXT",
+    "venue": "TEXT",
 }
 
 _WRITE_COLUMNS = tuple(_JOURNAL_COLUMNS)
@@ -179,6 +181,8 @@ def _entry_to_db(entry: JournalEntry) -> dict[str, object | None]:
         "bench_ret": entry.bench_ret,
         "graded": entry.graded,
         "reflected_at": entry.reflected_at.isoformat() if entry.reflected_at else None,
+        "strategy": entry.strategy,
+        "venue": entry.venue,
     }
 
 

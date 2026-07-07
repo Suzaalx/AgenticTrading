@@ -126,6 +126,12 @@ def _export_run_csv(
         msg = f"unknown run_id {run_id!r}"
         raise ValueError(msg)
     journal = _fetch_one(conn, "SELECT * FROM journal WHERE run_id = ?", run_id)
+    option_positions = _fetch_all(
+        conn,
+        "SELECT * FROM option_positions WHERE source_run_id = ? ORDER BY opened_at",
+        run_id,
+    )
+    live_orders = _live_orders_for_run(conn, run_id)
     orders = _fetch_all(conn, "SELECT * FROM orders WHERE run_id = ? ORDER BY created_at", run_id)
     fills = _fetch_all(
         conn,
@@ -144,16 +150,28 @@ def _export_run_csv(
         target.mkdir(parents=True, exist_ok=True)
         journal_path = target / f"{run_id}_journal.csv"
         paths = [journal_path, target / f"{run_id}_orders.csv", target / f"{run_id}_fills.csv"]
+        if option_positions:
+            paths.append(target / f"{run_id}_option_positions.csv")
+        if live_orders:
+            paths.append(target / f"{run_id}_live_orders.csv")
         include_orders = True
 
     row_counts: dict[str, int] = {}
-    _write_csv(journal_path, _JOURNAL_COLUMNS, _journal_rows(run, journal))
+    _write_csv(journal_path, _JOURNAL_COLUMNS, _journal_rows(run, journal, option_positions))
     row_counts["journal"] = 1 if journal is not None else 0
     if include_orders:
-        _write_csv(paths[1], _ORDER_COLUMNS, orders)
-        _write_csv(paths[2], _FILL_COLUMNS, _fill_rows(fills))
+        _write_csv(paths[1], _ORDER_COLUMNS, _order_rows(orders, live_orders))
+        _write_csv(paths[2], _FILL_COLUMNS, _fill_rows(fills, live_orders))
         row_counts["orders"] = len(orders)
         row_counts["fills"] = len(fills)
+        next_path = 3
+        if option_positions:
+            _write_csv(paths[next_path], _OPTION_POSITION_COLUMNS, _option_position_rows(option_positions))
+            row_counts["option_positions"] = len(option_positions)
+            next_path += 1
+        if live_orders:
+            _write_csv(paths[next_path], _LIVE_ORDER_COLUMNS, _live_order_rows(live_orders))
+            row_counts["live_orders"] = len(live_orders)
     return CsvExportResult(kind="run", export_id=run_id, paths=paths, row_counts=row_counts)
 
 
@@ -180,9 +198,10 @@ def _export_backtest_csv(
     metrics_path = target / f"{bt_id}_metrics.csv"
     trades_path = target / f"{bt_id}_trades.csv"
     equity_path = target / f"{bt_id}_equity_curve.csv"
-    _write_csv(metrics_path, _METRICS_COLUMNS, [_metrics_row(bt_id, row, config, metrics)])
-    _write_csv(trades_path, _TRADE_COLUMNS, _trade_rows(bt_id, trades))
-    _write_csv(equity_path, _EQUITY_COLUMNS, [{"bt_id": bt_id, **point} for point in equity_curve])
+    venue = str(config.get("venue") or config.get("execution_venue") or "paper")
+    _write_csv(metrics_path, _METRICS_COLUMNS, [_metrics_row(bt_id, row, config, metrics, venue)])
+    _write_csv(trades_path, _TRADE_COLUMNS, _trade_rows(bt_id, trades, venue))
+    _write_csv(equity_path, _EQUITY_COLUMNS, [{"bt_id": bt_id, "venue": venue, **point} for point in equity_curve])
     return CsvExportResult(
         kind="backtest",
         export_id=bt_id,
@@ -211,8 +230,13 @@ _JOURNAL_COLUMNS = [
     "run_verdict",
     "run_cost_usd",
     "run_tokens",
+    "venue",
+    "option_strategy",
+    "option_legs",
+    "option_max_loss",
+    "option_collateral",
 ]
-_ORDER_COLUMNS = ["order_id", "run_id", "symbol", "side", "qty", "reason", "status", "created_at"]
+_ORDER_COLUMNS = ["order_id", "run_id", "symbol", "side", "qty", "reason", "status", "created_at", "venue"]
 _FILL_COLUMNS = [
     "order_id",
     "price",
@@ -228,9 +252,33 @@ _FILL_COLUMNS = [
     "fill_notional_usd",
     "signed_cash_flow_usd",
     "execution_cost_usd",
+    "venue",
+]
+_OPTION_POSITION_COLUMNS = [
+    "position_id",
+    "source_run_id",
+    "underlying",
+    "strategy",
+    "legs_json",
+    "open_premium",
+    "max_loss",
+    "collateral",
+    "opened_at",
+    "expiry",
+    "venue",
+]
+_LIVE_ORDER_COLUMNS = [
+    "client_order_id",
+    "broker_order_id",
+    "venue",
+    "status",
+    "submitted_at",
+    "last_sync_at",
+    "raw_json",
 ]
 _METRICS_COLUMNS = [
     "bt_id",
+    "venue",
     "created_at",
     "symbol",
     "mode",
@@ -262,6 +310,7 @@ _METRICS_COLUMNS = [
 ]
 _TRADE_COLUMNS = [
     "bt_id",
+    "venue",
     "symbol",
     "entry_date",
     "entry_price",
@@ -275,7 +324,7 @@ _TRADE_COLUMNS = [
     "exit_notional_usd",
     "gross_pnl_usd",
 ]
-_EQUITY_COLUMNS = ["bt_id", "date", "equity", "cash", "position_qty", "close"]
+_EQUITY_COLUMNS = ["bt_id", "venue", "date", "equity", "cash", "position_qty", "close"]
 
 
 def _fetch_one(conn: sqlite3.Connection, sql: str, value: str) -> dict[str, Any] | None:
@@ -287,7 +336,11 @@ def _fetch_all(conn: sqlite3.Connection, sql: str, value: str) -> list[dict[str,
     return [dict(row) for row in conn.execute(sql, (value,)).fetchall()]
 
 
-def _journal_rows(run: dict[str, Any], journal: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _journal_rows(
+    run: dict[str, Any],
+    journal: dict[str, Any] | None,
+    option_positions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     if journal is None:
         return []
     realized = journal.get("realized_ret")
@@ -295,6 +348,8 @@ def _journal_rows(run: dict[str, Any], journal: dict[str, Any] | None) -> list[d
     alpha = None
     if realized is not None and benchmark is not None:
         alpha = Decimal(str(realized)) - Decimal(str(benchmark))
+    option = option_positions[0] if option_positions else {}
+    venue = journal.get("venue") or option.get("venue") or "paper"
     return [
         {
             **journal,
@@ -303,12 +358,23 @@ def _journal_rows(run: dict[str, Any], journal: dict[str, Any] | None) -> list[d
             "run_verdict": run.get("verdict"),
             "run_cost_usd": run.get("cost_usd"),
             "run_tokens": run.get("tokens"),
+            "venue": venue,
+            "option_strategy": option.get("strategy") or journal.get("strategy"),
+            "option_legs": option.get("legs_json"),
+            "option_max_loss": option.get("max_loss"),
+            "option_collateral": option.get("collateral"),
         }
     ]
 
 
-def _fill_rows(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _order_rows(orders: list[dict[str, Any]], live_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    live_by_order_id = _live_venue_by_order_id(live_orders)
+    return [{**order, "venue": order.get("venue") or live_by_order_id.get(str(order.get("order_id"))) or "paper"} for order in orders]
+
+
+def _fill_rows(fills: list[dict[str, Any]], live_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    live_by_order_id = _live_venue_by_order_id(live_orders)
     for fill in fills:
         price = _decimal_or_none(fill.get("price"))
         qty = _decimal_or_none(fill.get("qty"))
@@ -325,12 +391,21 @@ def _fill_rows(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "fill_notional_usd": notional,
                 "signed_cash_flow_usd": signed_cash_flow,
                 "execution_cost_usd": slippage + commission,
+                "venue": fill.get("venue") or live_by_order_id.get(str(fill.get("order_id"))) or "paper",
             }
         )
     return rows
 
 
-def _trade_rows(bt_id: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _option_position_rows(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**position, "venue": position.get("venue") or "paper"} for position in positions]
+
+
+def _live_order_rows(live_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**order, "venue": order.get("venue") or "paper"} for order in live_orders]
+
+
+def _trade_rows(bt_id: str, trades: list[dict[str, Any]], default_venue: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for trade in trades:
         entry_price = _decimal_or_none(trade.get("entry_price"))
@@ -341,6 +416,7 @@ def _trade_rows(bt_id: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]
         rows.append(
             {
                 "bt_id": bt_id,
+                "venue": trade.get("venue") or default_venue,
                 **trade,
                 "entry_notional_usd": entry_notional,
                 "exit_notional_usd": exit_notional,
@@ -364,11 +440,12 @@ _METRICS_CONFIG_KEYS = {
 
 
 def _metrics_row(
-    bt_id: str, row: dict[str, Any], config: dict[str, Any], metrics: dict[str, Any]
+    bt_id: str, row: dict[str, Any], config: dict[str, Any], metrics: dict[str, Any], venue: str
 ) -> dict[str, Any]:
     config_extra = {key: value for key, value in config.items() if key not in _METRICS_CONFIG_KEYS}
     return {
         "bt_id": bt_id,
+        "venue": venue,
         "created_at": row.get("created_at"),
         "symbol": config.get("symbol"),
         "mode": config.get("mode"),
@@ -379,6 +456,35 @@ def _metrics_row(
         "config_extra_json": config_extra,
         **metrics,
     }
+
+
+def _live_orders_for_run(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in conn.execute("SELECT * FROM live_orders ORDER BY submitted_at").fetchall()]
+    matched = []
+    for row in rows:
+        raw = _loads_best_effort_object(row.get("raw_json"))
+        order = raw.get("order") if isinstance(raw.get("order"), dict) else raw
+        if isinstance(order, dict) and order.get("run_id") == run_id:
+            matched.append(row)
+    return matched
+
+
+def _live_venue_by_order_id(live_orders: list[dict[str, Any]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for row in live_orders:
+        raw = _loads_best_effort_object(row.get("raw_json"))
+        order = raw.get("order") if isinstance(raw.get("order"), dict) else raw
+        if isinstance(order, dict) and order.get("order_id") is not None:
+            result[str(order["order_id"])] = str(row.get("venue") or order.get("venue") or "paper")
+    return result
+
+
+def _loads_best_effort_object(raw: object) -> dict[str, Any]:
+    try:
+        value = json.loads(str(raw or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def _write_csv(path: Path, columns: list[str], rows: list[dict[str, Any]]) -> None:
