@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
 from string import Formatter
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -17,11 +17,12 @@ from sentinel.core.bus import EventBus
 from sentinel.core.events import AgentStarted, CostIncurred, DebateTurnAdded
 from sentinel.core.models import DebateTurn, InvestmentPlan, Lesson, RunState
 from sentinel.llm.budget import assert_within_budget
-from sentinel.llm.contracts import StructuredLLM
+from sentinel.llm.contracts import LLMResult, StructuredLLM
 from sentinel.llm.cost import cost_usd, record_cost
 from sentinel.store.db import connect, run_migrations
 
 _MAX_TURN_WORDS = 350
+T = TypeVar("T", bound=BaseModel)
 
 
 class DebatePayload(BaseModel):
@@ -76,31 +77,12 @@ class ResearchDebater:
         model = self._model_for_start()
         await self.bus.publish(AgentStarted(run_id=state.run_id, agent=self.agent_name, model=model))
         prompt = self.build_prompt(state, round_number=round_number, lessons=lessons)
-        result = await self.llm.complete_structured(
-            agent=self.agent_name,
+        result = await self.complete_structured_metered(
+            run_id=state.run_id,
+            agent_name=self.agent_name,
             prompt=prompt,
             schema=DebatePayload,
             tier=self.tier,
-        )
-        incurred = cost_usd(result.model, result.input_tokens, result.output_tokens)
-        record_cost(
-            self.conn,
-            run_id=state.run_id,
-            agent=self.agent_name,
-            model=result.model,
-            tokens_in=result.input_tokens,
-            tokens_out=result.output_tokens,
-            cost=incurred,
-        )
-        await self.bus.publish(
-            CostIncurred(
-                run_id=state.run_id,
-                agent=self.agent_name,
-                model=result.model,
-                tokens_in=result.input_tokens,
-                tokens_out=result.output_tokens,
-                cost_usd=incurred,
-            )
         )
         argument = _payload_text(result.structured, fallback=result.content)
         return DebateTurn(
@@ -108,6 +90,46 @@ class ResearchDebater:
             round=round_number,
             argument=_truncate_words(argument),
         )
+
+    async def complete_structured_metered(
+        self,
+        *,
+        run_id: str,
+        agent_name: str,
+        prompt: str,
+        schema: type[T],
+        tier: Literal["quick", "deep"],
+    ) -> LLMResult[T | Any]:
+        """Call the LLM behind the same budget stop and cost ledger as agent runs."""
+
+        assert_within_budget(self.conn, Decimal(str(self.settings.llm.monthly_budget_usd)))
+        result = await self.llm.complete_structured(
+            agent=agent_name,
+            prompt=prompt,
+            schema=schema,
+            tier=tier,
+        )
+        incurred = cost_usd(result.model, result.input_tokens, result.output_tokens)
+        record_cost(
+            self.conn,
+            run_id=run_id,
+            agent=agent_name,
+            model=result.model,
+            tokens_in=result.input_tokens,
+            tokens_out=result.output_tokens,
+            cost=incurred,
+        )
+        await self.bus.publish(
+            CostIncurred(
+                run_id=run_id,
+                agent=agent_name,
+                model=result.model,
+                tokens_in=result.input_tokens,
+                tokens_out=result.output_tokens,
+                cost_usd=incurred,
+            )
+        )
+        return result
 
     def build_prompt(
         self,
@@ -233,8 +255,9 @@ async def _last_round_added_material_arguments(
         f"{render_transcript(state.debate_transcript)}"
     )
     try:
-        result = await agent.llm.complete_structured(
-            agent="debate_convergence_classifier",
+        result = await agent.complete_structured_metered(
+            run_id=state.run_id,
+            agent_name="debate_convergence_classifier",
             prompt=prompt,
             schema=ConvergencePayload,
             tier="quick",

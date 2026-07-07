@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -20,6 +21,7 @@ from sentinel.agents.risk_debaters import (
     run_risk_debate,
 )
 from sentinel.agents.trader import Trader
+from sentinel.config.settings import LLMSettings, Settings
 from sentinel.core.bus import EventBus
 from sentinel.core.events import AgentCompleted, AgentStarted, DebateTurnAdded
 from sentinel.core.models import (
@@ -38,11 +40,13 @@ from sentinel.core.models import (
     SentimentAnalystReport,
     TradeProposal,
 )
+from sentinel.llm.budget import BudgetExceeded
+from sentinel.llm.contracts import LLMResult
 from sentinel.store.db import connect, run_migrations
 from sentinel.testing.fakes import FakeLLM
 
 
-def _envelope(agent: str = "agent") -> dict[str, object]:
+def _envelope(agent: str = "agent") -> dict[str, Any]:
     return {
         "run_id": "run_agents",
         "agent": agent,
@@ -304,12 +308,13 @@ async def test_research_debate_convergence_exits_after_first_full_round(tmp_path
             "debate_convergence_classifier": {"answer": "no"},
         }
     )
+    conn = _conn(tmp_path)
     state = _state()
 
     transcript = await run_research_debate(
         state,
-        BullResearcher(llm=llm, bus=EventBus(), conn=_conn(tmp_path)),
-        BearResearcher(llm=llm, bus=EventBus(), conn=_conn(tmp_path)),
+        BullResearcher(llm=llm, bus=EventBus(), conn=conn),
+        BearResearcher(llm=llm, bus=EventBus(), conn=conn),
         max_rounds=3,
     )
 
@@ -319,6 +324,52 @@ async def test_research_debate_convergence_exits_after_first_full_round(tmp_path
         "bear_researcher",
         "debate_convergence_classifier",
     ]
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM costs WHERE agent = 'debate_convergence_classifier'"
+    ).fetchone()
+    assert row["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_research_debate_convergence_classifier_honors_budget_stop(tmp_path) -> None:
+    def metered_payload(
+        _agent: str,
+        _prompt: str,
+        schema: type[Any] | None,
+        _kwargs: dict[str, Any],
+    ) -> LLMResult[Any]:
+        assert schema is not None
+        structured = schema(**{"argument": "Material point."})
+        return LLMResult(
+            content="Material point.",
+            structured=structured,
+            input_tokens=1,
+            output_tokens=0,
+            model="gpt-5.4-mini",
+        )
+
+    llm = FakeLLM(
+        {
+            "bull_researcher": metered_payload,
+            "bear_researcher": metered_payload,
+            "debate_convergence_classifier": {"answer": "yes"},
+        }
+    )
+    conn = _conn(tmp_path)
+    settings = Settings(llm=LLMSettings(monthly_budget_usd=0.00000050))
+    state = _state()
+
+    with pytest.raises(BudgetExceeded):
+        await run_research_debate(
+            state,
+            BullResearcher(llm=llm, bus=EventBus(), conn=conn, settings=settings),
+            BearResearcher(llm=llm, bus=EventBus(), conn=conn, settings=settings),
+            max_rounds=2,
+        )
+
+    assert [call.agent for call in llm.calls] == ["bull_researcher", "bear_researcher"]
+    row = conn.execute("SELECT COUNT(*) AS count FROM costs").fetchone()
+    assert row["count"] == 2
 
 
 @pytest.mark.asyncio
