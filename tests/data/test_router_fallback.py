@@ -5,6 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from sentinel.data.cache import DiskCache
 from sentinel.data.router import DataRouter
 
 
@@ -42,6 +43,28 @@ class StooqFake:
         )
 
 
+class CountingYFinanceFake(YFinanceFake):
+    def __init__(self) -> None:
+        super().__init__("ok")
+        self.calls = 0
+
+    def get_ohlcv(
+        self, symbol: str, start: date, end: date, interval: str = "1d"
+    ) -> pd.DataFrame:
+        self.calls += 1
+        _ = (symbol, start, end, interval)
+        return pd.DataFrame(
+            {
+                "open": [20.0],
+                "high": [21.0],
+                "low": [19.0],
+                "close": [20.5],
+                "volume": [2000],
+            },
+            index=pd.date_range("2025-02-01", periods=1, name="date"),
+        )
+
+
 @pytest.mark.parametrize("mode", ["raise", "empty"])
 def test_router_falls_back_to_stooq_and_records_provider(mode: str) -> None:
     router = DataRouter(loaders=[YFinanceFake(mode), StooqFake()])
@@ -51,3 +74,18 @@ def test_router_falls_back_to_stooq_and_records_provider(mode: str) -> None:
     assert not frame.empty
     assert router.providers_used["ohlcv"] == "stooq"
     assert router.providers_used["ohlcv:NVDA"] == "stooq"
+
+
+def test_router_reuses_cached_ohlcv(tmp_path) -> None:
+    loader = CountingYFinanceFake()
+    router = DataRouter(loaders=[loader], cache=DiskCache(tmp_path))
+    start = date(2025, 2, 1)
+    end = date(2025, 2, 3)
+
+    first = router.get_ohlcv("NVDA", start, end)
+    second = router.get_ohlcv("NVDA", start, end)
+
+    assert loader.calls == 1
+    assert float(first.iloc[0]["close"]) == 20.5
+    assert float(second.iloc[0]["close"]) == 20.5
+    assert router.providers_used["ohlcv:NVDA"] == "yfinance"

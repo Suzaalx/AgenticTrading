@@ -26,7 +26,7 @@ class StooqLoader:
             raise ValueError(msg)
         from pandas_datareader import data as pdr
 
-        frame = cast(pd.DataFrame, pdr.DataReader(symbol, "stooq", start, end))
+        frame = cast(pd.DataFrame, pdr.DataReader(_stooq_symbol(symbol), "stooq", start, end))
         return normalize_ohlcv(frame)
 
     def get_quote(self, symbol: str) -> Quote:
@@ -41,3 +41,10 @@ class StooqLoader:
             ts=datetime.now(UTC),
             source=self.name,
         )
+
+
+def _stooq_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if "-USD" in normalized or "." in normalized:
+        return normalized
+    return f"{normalized}.US"

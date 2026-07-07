@@ -12,6 +12,7 @@ import pandas as pd
 
 from sentinel.config.settings import Settings, load_settings
 from sentinel.core.models import FundamentalsSnapshot, NewsItem, Quote
+from sentinel.data.cache import DiskCache
 from sentinel.data.loaders import (
     AlphaVantageLoader,
     FinnhubLoader,
@@ -34,9 +35,11 @@ class DataRouter:
         loaders: Sequence[object] | None = None,
         *,
         settings: Settings | None = None,
+        cache: DiskCache | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self.loaders = list(loaders) if loaders is not None else _default_loaders(self.settings)
+        self.cache = cache if cache is not None else (DiskCache() if loaders is None else None)
         self.providers_used: dict[str, str] = {}
         self.notes: list[str] = []
 
@@ -58,6 +61,11 @@ class DataRouter:
             "local",
         ]
         for loader in self._chain(chain):
+            provider = cast(str, getattr(loader, "name", "unknown"))
+            cached = self._cached_ohlcv(provider, symbol, start, end, interval)
+            if cached is not None:
+                self._record("ohlcv", symbol, provider)
+                return cached
             try:
                 raw = cast(Any, loader).get_ohlcv(symbol, start, end, interval)
                 if raw is None or raw.empty:
@@ -65,10 +73,11 @@ class DataRouter:
                 clean = clean_ohlcv(raw)
                 if clean.empty:
                     continue
-                self._record("ohlcv", symbol, cast(str, getattr(loader, "name", "unknown")))
+                self._store_ohlcv(provider, symbol, start, end, interval, clean)
+                self._record("ohlcv", symbol, provider)
                 return clean
             except Exception as exc:
-                logger.info("%s OHLCV failed for %s: %s", getattr(loader, "name", "unknown"), symbol, exc)
+                logger.info("%s OHLCV failed for %s: %s", provider, symbol, exc)
         self._record("ohlcv", symbol, "none")
         self.notes.append(f"OHLCV data unavailable for {symbol}")
         return empty_ohlcv()
@@ -131,6 +140,42 @@ class DataRouter:
     def _record(self, kind: str, symbol: str, provider: str) -> None:
         self.providers_used[kind] = provider
         self.providers_used[f"{kind}:{symbol.upper()}"] = provider
+
+    def _cached_ohlcv(
+        self,
+        provider: str,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str,
+    ) -> pd.DataFrame | None:
+        if self.cache is None:
+            return None
+        try:
+            cached = self.cache.get_frame(provider, symbol, interval, start, end)
+        except Exception as exc:
+            logger.info("%s cache read failed for %s: %s", provider, symbol, exc)
+            return None
+        if cached is None or cached.empty:
+            return None
+        clean = clean_ohlcv(cached)
+        return None if clean.empty else clean
+
+    def _store_ohlcv(
+        self,
+        provider: str,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str,
+        frame: pd.DataFrame,
+    ) -> None:
+        if self.cache is None:
+            return
+        try:
+            self.cache.set_frame(provider, symbol, interval, start, end, frame)
+        except Exception as exc:
+            logger.info("%s cache write failed for %s: %s", provider, symbol, exc)
 
 
 def _default_loaders(settings: Settings) -> list[object]:
