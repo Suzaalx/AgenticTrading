@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sentinel.core.models import (
     AgentReport,
@@ -32,7 +33,7 @@ from sentinel.core.models import (
 )
 
 
-def envelope() -> dict[str, object]:
+def envelope() -> dict[str, Any]:
     return {
         "run_id": "01JTEST",
         "agent": "agent",
@@ -44,6 +45,24 @@ def envelope() -> dict[str, object]:
         "cost_usd": Decimal("0.01"),
         "content": "ok",
     }
+
+
+def test_trade_proposal_nullish_stop_values_become_none() -> None:
+    payload: dict[str, Any] = {
+        **envelope(),
+        "action": "HOLD",
+        "quantity_pct": 0.0,
+        "order_type": "market",
+        "time_horizon_days": 1,
+        "entry_rationale": "wait",
+        "exit_plan": "none",
+        "stop_loss_pct": "N/A",
+        "take_profit_pct": " null ",
+    }
+    proposal = TradeProposal.model_validate(payload)
+
+    assert proposal.stop_loss_pct is None
+    assert proposal.take_profit_pct is None
 
 
 def test_all_models_instantiate() -> None:

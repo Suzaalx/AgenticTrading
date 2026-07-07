@@ -41,6 +41,7 @@ def compute_metrics(
     sharpe = _sharpe(returns)
     sortino = _sortino(returns)
     max_drawdown, drawdown_start, drawdown_end = _drawdown(equity)
+    calmar = _calmar(annualized_return, max_drawdown)
     closed_pnls = [float(trade["pnl"]) for trade in trades if "pnl" in trade]
     wins = [pnl for pnl in closed_pnls if pnl > 0]
     losses = [pnl for pnl in closed_pnls if pnl < 0]
@@ -53,6 +54,7 @@ def compute_metrics(
     average_equity = float(equity.mean()) if not equity.empty else starting_cash
     turnover = turnover_notional / average_equity if average_equity else 0.0
     benchmark_return = _benchmark_return(benchmark_prices, equity.index)
+    information_ratio = _information_ratio(returns, benchmark_prices, equity.index)
     bootstrap = bootstrap_return_metrics(
         returns,
         iterations=bootstrap_iterations,
@@ -62,8 +64,10 @@ def compute_metrics(
     return BacktestResult(
         total_return=total_return,
         annualized_return=annualized_return,
+        calmar=calmar,
         sharpe=sharpe,
         sortino=sortino,
+        information_ratio=information_ratio,
         max_drawdown=max_drawdown,
         max_drawdown_start=drawdown_start,
         max_drawdown_end=drawdown_end,
@@ -120,6 +124,12 @@ def _sortino(returns: pd.Series) -> float:
     return float((float(cast(Any, returns.mean())) / downside_std) * np.sqrt(252))
 
 
+def _calmar(annualized_return: float, max_drawdown: float) -> float:
+    if max_drawdown == 0.0 or not math.isfinite(max_drawdown):
+        return 0.0
+    return annualized_return / abs(max_drawdown)
+
+
 def _drawdown(equity: pd.Series) -> tuple[float, date | None, date | None]:
     running_peak = cast(pd.Series, equity.cummax())
     drawdowns = cast(pd.Series, (equity / running_peak) - 1.0)
@@ -140,11 +150,50 @@ def _profit_factor(wins: Sequence[float], losses: Sequence[float]) -> float:
 
 
 def _benchmark_return(benchmark_prices: pd.DataFrame | pd.Series | None, equity_index: pd.Index) -> float:
-    if benchmark_prices is None or len(benchmark_prices) == 0 or equity_index.empty:
+    prices = _benchmark_price_series(benchmark_prices)
+    if prices.empty or equity_index.empty:
         return 0.0
+    equity_dates = pd.DatetimeIndex([pd.Timestamp(cast(Any, value)) for value in equity_index])
+    start = equity_dates.min()
+    end = equity_dates.max()
+    scoped = prices.loc[(prices.index >= start) & (prices.index <= end)]
+    if len(scoped) < 2:
+        return 0.0
+    first = float(scoped.iloc[0])
+    last = float(scoped.iloc[-1])
+    return (last / first) - 1.0 if first else 0.0
+
+
+def _information_ratio(
+    returns: pd.Series,
+    benchmark_prices: pd.DataFrame | pd.Series | None,
+    equity_index: pd.Index,
+) -> float:
+    if returns.empty or equity_index.empty:
+        return 0.0
+    prices = _benchmark_price_series(benchmark_prices)
+    if prices.empty:
+        return 0.0
+    equity_dates = pd.DatetimeIndex([pd.Timestamp(cast(Any, value)) for value in equity_index])
+    benchmark_returns = cast(pd.Series, prices.reindex(equity_dates).ffill().pct_change().dropna())
+    if benchmark_returns.empty:
+        return 0.0
+    aligned_strategy, aligned_benchmark = returns.align(benchmark_returns, join="inner")
+    if aligned_strategy.empty:
+        return 0.0
+    active_returns = cast(pd.Series, aligned_strategy - aligned_benchmark)
+    tracking_error = float(cast(Any, active_returns.std(ddof=1)))
+    if tracking_error == 0.0 or not math.isfinite(tracking_error):
+        return 0.0
+    return float((float(cast(Any, active_returns.mean())) / tracking_error) * np.sqrt(252))
+
+
+def _benchmark_price_series(benchmark_prices: pd.DataFrame | pd.Series | None) -> pd.Series:
+    if benchmark_prices is None or len(benchmark_prices) == 0:
+        return pd.Series(dtype=float)
     if isinstance(benchmark_prices, pd.DataFrame):
         if "close" not in benchmark_prices.columns:
-            return 0.0
+            return pd.Series(dtype=float)
         raw_series = cast(pd.Series, benchmark_prices["close"])
     else:
         raw_series = benchmark_prices
@@ -156,15 +205,4 @@ def _benchmark_return(benchmark_prices: pd.DataFrame | pd.Series | None, equity_
     prices.index = [
         cast(pd.Timestamp, pd.Timestamp(cast(Any, value))).normalize() for value in prices.index
     ]
-    prices = cast(pd.Series, prices.sort_index().dropna())
-    if prices.empty:
-        return 0.0
-    equity_dates = pd.DatetimeIndex([pd.Timestamp(cast(Any, value)) for value in equity_index])
-    start = equity_dates.min()
-    end = equity_dates.max()
-    scoped = prices.loc[(prices.index >= start) & (prices.index <= end)]
-    if len(scoped) < 2:
-        return 0.0
-    first = float(scoped.iloc[0])
-    last = float(scoped.iloc[-1])
-    return (last / first) - 1.0 if first else 0.0
+    return cast(pd.Series, prices.sort_index().dropna())

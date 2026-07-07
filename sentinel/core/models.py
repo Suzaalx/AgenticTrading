@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 class SentinelModel(BaseModel):
@@ -146,6 +146,13 @@ class TradeProposal(AgentReport):
     exit_plan: str
     stop_loss_pct: float | None
     take_profit_pct: float | None
+
+    @field_validator("stop_loss_pct", "take_profit_pct", mode="before")
+    @classmethod
+    def _normalize_nullish_float(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() in {"", "n/a", "null", "none"}:
+            return None
+        return value
 
 
 class PMDecision(AgentReport):
@@ -335,8 +342,10 @@ class BacktestResult(SentinelModel):
 
     total_return: float
     annualized_return: float
+    calmar: float = 0.0
     sharpe: float
     sortino: float
+    information_ratio: float = 0.0
     max_drawdown: float
     max_drawdown_start: date | None
     max_drawdown_end: date | None
