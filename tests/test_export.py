@@ -69,7 +69,13 @@ def test_export_run_csv_bundle_writes_journal_orders_and_fills(tmp_path: Path) -
         assert journal_rows[0]["alpha_ret"] == "0.10"
         assert journal_rows[0]["run_verdict"] == "approved"
         assert _read_csv(tmp_path / "csv" / "run-1_orders.csv")[0]["qty"] == "1.2300"
-        assert _read_csv(tmp_path / "csv" / "run-1_fills.csv")[0]["price"] == "100.50"
+        fill_row = _read_csv(tmp_path / "csv" / "run-1_fills.csv")[0]
+        assert fill_row["price"] == "100.50"
+        assert fill_row["symbol"] == "NVDA"
+        assert fill_row["side"] == "buy"
+        assert fill_row["fill_notional_usd"] == "123.615000"
+        assert fill_row["signed_cash_flow_usd"] == "-123.615000"
+        assert fill_row["execution_cost_usd"] == "0.05"
     finally:
         conn.close()
 
@@ -85,6 +91,7 @@ def test_export_backtest_csv_bundle_writes_metrics_trades_and_equity(tmp_path: P
             "start": "2025-01-01",
             "end": "2025-02-01",
             "cadence": "daily",
+            "notional_per_day": "5.00",
         }
         metrics = {
             "benchmark_symbol": "SPY",
@@ -135,8 +142,48 @@ def test_export_backtest_csv_bundle_writes_metrics_trades_and_equity(tmp_path: P
         metrics_rows = _read_csv(tmp_path / "bt" / "bt-1_metrics.csv")
         assert metrics_rows[0]["symbol"] == "SPY"
         assert metrics_rows[0]["bootstrap_sharpe_p05"] == ""
-        assert _read_csv(tmp_path / "bt" / "bt-1_trades.csv")[0]["pnl"] == "5"
+        assert json.loads(metrics_rows[0]["config_extra_json"]) == {"notional_per_day": "5.00"}
+        trade_row = _read_csv(tmp_path / "bt" / "bt-1_trades.csv")[0]
+        assert trade_row["pnl"] == "5"
+        assert trade_row["entry_notional_usd"] == "100"
+        assert trade_row["exit_notional_usd"] == "105"
+        assert trade_row["gross_pnl_usd"] == "5"
         assert _read_csv(tmp_path / "bt" / "bt-1_equity_curve.csv")[0]["equity"] == "10000"
+    finally:
+        conn.close()
+
+
+def test_export_csv_formats_tiny_quantities_without_scientific_notation(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "sentinel.db")
+    try:
+        run_migrations(conn)
+        ensure_journal_schema(conn)
+        conn.execute(
+            """INSERT INTO runs
+            (run_id, symbol, as_of, mode, status, action, verdict, cost_usd, tokens, created_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("run-tiny", "BTC-USD", "2026-01-02", "decision", "complete", "BUY", "approved", 0, 0, "t0", "t1"),
+        )
+        conn.execute(
+            """INSERT INTO orders
+            (order_id, run_id, symbol, side, qty, reason, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("ord-tiny", "run-tiny", "BTC-USD", "buy", "1E-7", "agent_decision", "filled", "t0"),
+        )
+        conn.execute(
+            """INSERT INTO fills
+            (order_id, price, qty, slippage_usd, commission_usd, ts)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            ("ord-tiny", "60000", "1E-7", "0", "0", "t1"),
+        )
+        conn.commit()
+
+        export_csv_bundle(conn, "run-tiny", output_dir=tmp_path / "csv")
+
+        assert _read_csv(tmp_path / "csv" / "run-tiny_orders.csv")[0]["qty"] == "0.0000001"
+        fill_row = _read_csv(tmp_path / "csv" / "run-tiny_fills.csv")[0]
+        assert fill_row["qty"] == "0.0000001"
+        assert fill_row["fill_notional_usd"] == "0.0060000"
     finally:
         conn.close()
 

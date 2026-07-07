@@ -129,7 +129,8 @@ def _export_run_csv(
     orders = _fetch_all(conn, "SELECT * FROM orders WHERE run_id = ? ORDER BY created_at", run_id)
     fills = _fetch_all(
         conn,
-        "SELECT f.* FROM fills f JOIN orders o ON o.order_id = f.order_id "
+        "SELECT f.*, o.run_id, o.symbol, o.side, o.reason AS order_reason, o.status AS order_status "
+        "FROM fills f JOIN orders o ON o.order_id = f.order_id "
         "WHERE o.run_id = ? ORDER BY f.ts",
         run_id,
     )
@@ -150,7 +151,7 @@ def _export_run_csv(
     row_counts["journal"] = 1 if journal is not None else 0
     if include_orders:
         _write_csv(paths[1], _ORDER_COLUMNS, orders)
-        _write_csv(paths[2], _FILL_COLUMNS, fills)
+        _write_csv(paths[2], _FILL_COLUMNS, _fill_rows(fills))
         row_counts["orders"] = len(orders)
         row_counts["fills"] = len(fills)
     return CsvExportResult(kind="run", export_id=run_id, paths=paths, row_counts=row_counts)
@@ -180,7 +181,7 @@ def _export_backtest_csv(
     trades_path = target / f"{bt_id}_trades.csv"
     equity_path = target / f"{bt_id}_equity_curve.csv"
     _write_csv(metrics_path, _METRICS_COLUMNS, [_metrics_row(bt_id, row, config, metrics)])
-    _write_csv(trades_path, _TRADE_COLUMNS, [{"bt_id": bt_id, **trade} for trade in trades])
+    _write_csv(trades_path, _TRADE_COLUMNS, _trade_rows(bt_id, trades))
     _write_csv(equity_path, _EQUITY_COLUMNS, [{"bt_id": bt_id, **point} for point in equity_curve])
     return CsvExportResult(
         kind="backtest",
@@ -212,7 +213,22 @@ _JOURNAL_COLUMNS = [
     "run_tokens",
 ]
 _ORDER_COLUMNS = ["order_id", "run_id", "symbol", "side", "qty", "reason", "status", "created_at"]
-_FILL_COLUMNS = ["order_id", "price", "qty", "slippage_usd", "commission_usd", "ts"]
+_FILL_COLUMNS = [
+    "order_id",
+    "price",
+    "qty",
+    "slippage_usd",
+    "commission_usd",
+    "ts",
+    "run_id",
+    "symbol",
+    "side",
+    "order_reason",
+    "order_status",
+    "fill_notional_usd",
+    "signed_cash_flow_usd",
+    "execution_cost_usd",
+]
 _METRICS_COLUMNS = [
     "bt_id",
     "created_at",
@@ -242,6 +258,7 @@ _METRICS_COLUMNS = [
     "bootstrap_sharpe_p95",
     "bootstrap_max_drawdown_p05",
     "bootstrap_max_drawdown_p95",
+    "config_extra_json",
 ]
 _TRADE_COLUMNS = [
     "bt_id",
@@ -254,6 +271,9 @@ _TRADE_COLUMNS = [
     "pnl",
     "return",
     "bars_held",
+    "entry_notional_usd",
+    "exit_notional_usd",
+    "gross_pnl_usd",
 ]
 _EQUITY_COLUMNS = ["bt_id", "date", "equity", "cash", "position_qty", "close"]
 
@@ -287,9 +307,66 @@ def _journal_rows(run: dict[str, Any], journal: dict[str, Any] | None) -> list[d
     ]
 
 
+def _fill_rows(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for fill in fills:
+        price = _decimal_or_none(fill.get("price"))
+        qty = _decimal_or_none(fill.get("qty"))
+        slippage = _decimal_or_none(fill.get("slippage_usd")) or Decimal("0")
+        commission = _decimal_or_none(fill.get("commission_usd")) or Decimal("0")
+        notional = price * qty if price is not None and qty is not None else None
+        side = str(fill.get("side") or "").lower()
+        signed_cash_flow: Decimal | None = None
+        if notional is not None:
+            signed_cash_flow = -(notional + commission) if side == "buy" else notional - commission
+        rows.append(
+            {
+                **fill,
+                "fill_notional_usd": notional,
+                "signed_cash_flow_usd": signed_cash_flow,
+                "execution_cost_usd": slippage + commission,
+            }
+        )
+    return rows
+
+
+def _trade_rows(bt_id: str, trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for trade in trades:
+        entry_price = _decimal_or_none(trade.get("entry_price"))
+        exit_price = _decimal_or_none(trade.get("exit_price"))
+        qty = _decimal_or_none(trade.get("qty"))
+        entry_notional = entry_price * qty if entry_price is not None and qty is not None else None
+        exit_notional = exit_price * qty if exit_price is not None and qty is not None else None
+        rows.append(
+            {
+                "bt_id": bt_id,
+                **trade,
+                "entry_notional_usd": entry_notional,
+                "exit_notional_usd": exit_notional,
+                "gross_pnl_usd": trade.get("pnl"),
+            }
+        )
+    return rows
+
+
+_METRICS_CONFIG_KEYS = {
+    "symbol",
+    "mode",
+    "strategy",
+    "start",
+    "end",
+    "cadence",
+    "benchmark_symbol",
+    "csv_path",
+    "data",
+}
+
+
 def _metrics_row(
     bt_id: str, row: dict[str, Any], config: dict[str, Any], metrics: dict[str, Any]
 ) -> dict[str, Any]:
+    config_extra = {key: value for key, value in config.items() if key not in _METRICS_CONFIG_KEYS}
     return {
         "bt_id": bt_id,
         "created_at": row.get("created_at"),
@@ -299,6 +376,7 @@ def _metrics_row(
         "start": config.get("start"),
         "end": config.get("end"),
         "cadence": config.get("cadence"),
+        "config_extra_json": config_extra,
         **metrics,
     }
 
@@ -334,6 +412,15 @@ def _csv_value(value: object) -> str:
     if isinstance(value, (list, dict, tuple)):
         return json.dumps(value, default=str, allow_nan=False)
     return str(value)
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
 
 
 def _loads_object(raw: object, field: str, export_id: str) -> dict[str, Any]:
