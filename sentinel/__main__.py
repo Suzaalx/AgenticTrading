@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
@@ -379,24 +379,43 @@ def snapshot(symbol: Annotated[str, typer.Argument(help="Symbol to snapshot")]) 
 
 @app.command()
 def export(
-    run_id: Annotated[str, typer.Argument(help="Run id to export")],
-    output: Annotated[Path | None, typer.Option("--output", "-o", help="Markdown output path")] = None,
+    run_id: Annotated[str, typer.Argument(help="Run id or backtest id to export")],
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Output path")] = None,
+    csv_output: Annotated[bool, typer.Option("--csv", help="Export CSV files instead of markdown")] = False,
+    kind: Annotated[str, typer.Option("--kind", help="auto, run, or backtest")] = "auto",
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON")] = False,
 ) -> None:
-    """Export a run bundle to markdown."""
+    """Export a run bundle to markdown or CSV."""
 
-    import json
+    from sentinel.store.export import CsvExportMode, export_csv_bundle, export_run_bundle
 
-    from sentinel.store.export import export_run_bundle
+    if kind not in {"auto", "run", "backtest"}:
+        raise typer.BadParameter("kind must be one of: auto, run, backtest")
+    csv_kind = cast(CsvExportMode, kind)
 
     conn = connect(default_db_path())
     try:
         run_migrations(conn)
-        path = export_run_bundle(conn, run_id, output_path=output)
+        if csv_output:
+            result = export_csv_bundle(conn, run_id, output_dir=output, kind=csv_kind)
+        else:
+            path = export_run_bundle(conn, run_id, output_path=output)
     finally:
         conn.close()
-    if json_output:
-        console.print(json.dumps({"run_id": run_id, "path": str(path)}))
+    if csv_output:
+        if json_output:
+            console.print_json(
+                data={
+                    "id": result.export_id,
+                    "kind": result.kind,
+                    "paths": [str(path) for path in result.paths],
+                    "row_counts": result.row_counts,
+                }
+            )
+        else:
+            console.print(f"exported {result.kind} {result.export_id} -> {result.paths[0].parent}")
+    elif json_output:
+        console.print_json(data={"run_id": run_id, "path": str(path)})
     else:
         console.print(f"exported {run_id} -> {path}")
 
