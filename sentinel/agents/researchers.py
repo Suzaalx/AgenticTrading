@@ -268,9 +268,10 @@ def render_transcript(transcript: list[DebateTurn]) -> str:
 
 
 def render_lessons(lessons: list[Lesson]) -> str:
+    header = "### Lessons from your past trades"
     if not lessons:
-        return "_No memory lessons provided._"
-    rows = ["| id | grade | tags | lesson | outcome |", "| --- | --- | --- | --- | --- |"]
+        return f"{header}\n_No memory lessons provided._"
+    rows = [header, "", "| id | grade | tags | lesson | outcome |", "| --- | --- | --- | --- | --- |"]
     for lesson in lessons[:5]:
         rows.append(
             "| "

@@ -284,6 +284,7 @@ async def test_research_debate_alternates_bull_first_and_manager_judges(tmp_path
     assert len(state.debate_transcript) == 4
     assert isinstance(manager, InvestmentPlan)
     assert "decisive" in manager.debate_scorecard
+    assert "### Lessons from your past trades" in llm.calls[0].prompt
     assert "Trim size after earnings gaps." in llm.calls[0].prompt
     debate_events = []
     while not queue.empty():
@@ -405,6 +406,9 @@ async def test_risk_debate_runs_three_perspectives_in_order_and_pm_revises(tmp_p
     assert isinstance(decision, PMDecision)
     assert decision.verdict == "REVISE"
     assert decision.approved_quantity_pct == 25.0
+    pm_prompt = next(call.prompt for call in llm.calls if call.agent == "portfolio_manager")
+    assert "### Lessons from your past trades" in pm_prompt
+    assert "Trim size after earnings gaps." in pm_prompt
     debate_events = []
     while not queue.empty():
         event = await queue.get()

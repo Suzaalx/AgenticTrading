@@ -66,7 +66,7 @@ from sentinel.execution.portfolio import (
 )
 from sentinel.llm.contracts import StructuredLLM
 from sentinel.memory.journal import write_journal_entry
-from sentinel.memory.recall import format_lessons_for_prompt, recall_lessons
+from sentinel.memory.recall import recall_lessons
 from sentinel.risk.gate import check_order
 from sentinel.risk.killswitch import is_engaged
 from sentinel.risk.sizing import size_order
@@ -450,9 +450,7 @@ class OrchestratorGraph:
 
     def _recall_lessons(self, state: RunState):
         tags = self._setup_tags(state)
-        lessons = recall_lessons(self.conn, state.symbol, tags, limit=5)
-        _ = format_lessons_for_prompt(lessons)
-        return lessons
+        return recall_lessons(self.conn, state.symbol, tags, limit=5)
 
     @staticmethod
     def _setup_tags(state: RunState) -> list[str]:
