@@ -114,6 +114,15 @@ class RouterQuoteSource(QuoteSource):
         return self.router.get_quote(symbol)
 
 
+def _debate_tags(winner: Literal["bull", "bear", "split"]) -> list[str]:
+    label = {
+        "bull": "bull_won_debate",
+        "bear": "bear_won_debate",
+        "split": "debate_split",
+    }[winner]
+    return [f"debate_won_by:{winner}", label]
+
+
 class OrchestratorGraph:
     """Dependency-injected async state machine for one decision run."""
 
@@ -457,6 +466,7 @@ class OrchestratorGraph:
         tags: list[str] = []
         if state.investment_plan is not None:
             tags.append(state.investment_plan.stance)
+            tags.extend(_debate_tags(state.investment_plan.debate_won_by))
             tags.extend(risk.lower().replace(" ", "_") for risk in state.investment_plan.key_risks[:3])
         for report in state.analyst_reports.values():
             tags.extend(str(signal).lower().replace(" ", "_") for signal in getattr(report, "signals", [])[:2])

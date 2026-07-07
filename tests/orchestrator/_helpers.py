@@ -150,6 +150,7 @@ def fake_llm(*, action: str = "BUY", verdict: str = "APPROVE") -> FakeLLM:
                 "key_risks": ["valuation"],
                 "invalidation": "Break below support.",
                 "debate_scorecard": "Bull trend was decisive; bear valuation capped size.",
+                "debate_won_by": "bull",
             },
             "trader": {
                 "content": f"{action} based on plan.",

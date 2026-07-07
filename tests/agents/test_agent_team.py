@@ -116,6 +116,7 @@ def _investment_plan() -> InvestmentPlan:
         key_risks=["valuation"],
         invalidation="Revenue growth falls below provided 0.42 value.",
         debate_scorecard="Bull won on demand; bear won on valuation risk.",
+        debate_won_by="bull",
     )
 
 
@@ -266,6 +267,7 @@ async def test_research_debate_alternates_bull_first_and_manager_judges(tmp_path
                 "key_risks": ["pe_ttm 45.0"],
                 "invalidation": "Break support 140.0.",
                 "debate_scorecard": "Bull trend argument decisive; bear valuation reduced conviction.",
+                "debate_won_by": "bull",
             },
         }
     )
@@ -288,6 +290,7 @@ async def test_research_debate_alternates_bull_first_and_manager_judges(tmp_path
     assert len(state.debate_transcript) == 4
     assert isinstance(manager, InvestmentPlan)
     assert "decisive" in manager.debate_scorecard
+    assert manager.debate_won_by == "bull"
     assert "### Lessons from your past trades" in llm.calls[0].prompt
     assert "Trim size after earnings gaps." in llm.calls[0].prompt
     debate_events = []

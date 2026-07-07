@@ -99,7 +99,7 @@ class DataRouter:
     def get_news(self, symbol: str, lookback_days: int, limit: int) -> list[NewsItem]:
         """Return news from Finnhub, yfinance news, or an empty list."""
 
-        for loader in self._chain(["finnhub", "yfinance_news", "yfinance"]):
+        for loader in self._chain(["finnhub", "yfinance_news"]):
             try:
                 news = cast(Any, loader).get_news(symbol, lookback_days, limit)
                 if not news:

@@ -26,4 +26,6 @@ specific decisive bull and bear arguments and explain which side argued better.
 
 Output:
 Return provider structured output matching the schema exactly. Include markdown `content`,
-stance, conviction, thesis, key_risks, invalidation, and debate_scorecard.
+stance, conviction, thesis, key_risks, invalidation, debate_scorecard, and debate_won_by.
+Set debate_won_by to "bull" when bull arguments were more decisive, "bear" when bear
+arguments were more decisive, otherwise "split".

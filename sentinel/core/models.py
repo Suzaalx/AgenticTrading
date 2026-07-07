@@ -133,6 +133,7 @@ class InvestmentPlan(AgentReport):
     key_risks: list[str]
     invalidation: str
     debate_scorecard: str
+    debate_won_by: Literal["bull", "bear", "split"] = "split"
 
 
 class TradeProposal(AgentReport):

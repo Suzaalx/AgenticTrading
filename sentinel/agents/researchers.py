@@ -188,6 +188,7 @@ class ResearchManager(Agent):
         key_risks: list[str]
         invalidation: str
         debate_scorecard: str
+        debate_won_by: Literal["bull", "bear", "split"] = "split"
 
     agent_name: ClassVar[str] = "research_manager"
     tier: ClassVar[Literal["deep"]] = "deep"

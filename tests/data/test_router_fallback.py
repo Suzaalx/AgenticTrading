@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
 
+from sentinel.core.models import NewsItem
 from sentinel.data.cache import DiskCache
 from sentinel.data.router import DataRouter
 
@@ -65,6 +66,41 @@ class CountingYFinanceFake(YFinanceFake):
         )
 
 
+class EmptyNewsFake:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    def get_news(self, symbol: str, lookback_days: int, limit: int) -> list[NewsItem]:
+        self.calls += 1
+        _ = (symbol, lookback_days, limit)
+        return []
+
+
+class YFinanceNewsFake(EmptyNewsFake):
+    def __init__(self) -> None:
+        super().__init__("yfinance_news")
+
+
+class YFinanceNewsFallbackFake(EmptyNewsFake):
+    def __init__(self) -> None:
+        super().__init__("yfinance")
+
+    def get_news(self, symbol: str, lookback_days: int, limit: int) -> list[NewsItem]:
+        self.calls += 1
+        _ = (lookback_days, limit)
+        return [
+            NewsItem(
+                title="Plain yfinance should not be used",
+                summary="fallback",
+                source="yfinance",
+                url="https://example.invalid/news",
+                published=datetime(2026, 1, 1, tzinfo=UTC),
+                symbols=[symbol],
+            )
+        ]
+
+
 @pytest.mark.parametrize("mode", ["raise", "empty"])
 def test_router_falls_back_to_stooq_and_records_provider(mode: str) -> None:
     router = DataRouter(loaders=[YFinanceFake(mode), StooqFake()])
@@ -89,3 +125,18 @@ def test_router_reuses_cached_ohlcv(tmp_path) -> None:
     assert float(first.iloc[0]["close"]) == 20.5
     assert float(second.iloc[0]["close"]) == 20.5
     assert router.providers_used["ohlcv:NVDA"] == "yfinance"
+
+
+def test_news_chain_omits_plain_yfinance_fallback() -> None:
+    finnhub = EmptyNewsFake("finnhub")
+    yfinance_news = YFinanceNewsFake()
+    plain_yfinance = YFinanceNewsFallbackFake()
+    router = DataRouter(loaders=[finnhub, yfinance_news, plain_yfinance])
+
+    news = router.get_news("NVDA", lookback_days=3, limit=5)
+
+    assert news == []
+    assert finnhub.calls == 1
+    assert yfinance_news.calls == 1
+    assert plain_yfinance.calls == 0
+    assert router.providers_used["news:NVDA"] == "none"

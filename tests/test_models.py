@@ -133,6 +133,7 @@ def test_all_models_instantiate() -> None:
         invalidation="break",
         debate_scorecard="bull",
     )
+    assert plan.debate_won_by == "split"
     proposal = TradeProposal(
         **envelope(),
         action="BUY",
