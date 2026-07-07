@@ -39,9 +39,13 @@ class LLMGateway:
         self.provider_name = provider_name or self.settings.llm.provider
         self.provider = provider or self._build_provider(self.provider_name, base_url=base_url)
 
-    def model_for_tier(self, tier: Tier = "quick") -> str:
-        """Return the configured model for a gateway tier."""
+    def model_for_tier(self, tier: Tier = "quick", *, agent: str | None = None) -> str:
+        """Return the configured model for an agent role or gateway tier."""
 
+        if agent is not None:
+            role_model = self.settings.llm.role_models.get(agent)
+            if role_model:
+                return role_model
         return self.settings.llm.deep_model if tier == "deep" else self.settings.llm.quick_model
 
     async def complete_structured(
@@ -57,7 +61,7 @@ class LLMGateway:
     ) -> LLMResult[T | Any]:
         """Call the selected provider and coerce the result into the requested schema."""
 
-        selected_model = model or self.model_for_tier(tier)
+        selected_model = model or self.model_for_tier(tier, agent=agent)
         selected_temperature = (
             self.settings.llm.temperature if temperature is None else temperature
         )

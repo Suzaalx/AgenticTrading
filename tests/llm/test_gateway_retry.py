@@ -19,8 +19,10 @@ class SequencedProvider:
     def __init__(self, payloads: list[Any]) -> None:
         self.payloads = payloads
         self.prompts: list[str] = []
+        self.calls: list[dict[str, Any]] = []
 
     async def complete_structured(self, **kwargs: Any) -> LLMResult[Any]:
+        self.calls.append(dict(kwargs))
         self.prompts.append(str(kwargs["prompt"]))
         payload = self.payloads.pop(0)
         return LLMResult(content=str(payload), structured=payload, input_tokens=10, output_tokens=5, model="gpt-5.4-mini")
@@ -92,3 +94,42 @@ async def test_gateway_treats_provider_validation_error_as_schema_retry() -> Non
 
     assert result.structured.value == 11
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_gateway_prefers_role_model_then_tier_default() -> None:
+    provider = SequencedProvider([{"value": 1}, {"value": 2}, {"value": 3}])
+    settings = Settings(
+        llm=LLMSettings(
+            provider="openai",
+            quick_model="quick-default",
+            deep_model="deep-default",
+            role_models={"research_manager": "role-deep-model"},
+            max_retries=0,
+        )
+    )
+    gateway = LLMGateway(settings=settings, provider=provider)
+
+    await gateway.complete_structured(
+        agent="research_manager",
+        prompt="role prompt",
+        schema=SamplePayload,
+        tier="deep",
+    )
+    await gateway.complete_structured(
+        agent="market_analyst",
+        prompt="tier prompt",
+        schema=SamplePayload,
+        tier="quick",
+    )
+    await gateway.complete_structured(
+        agent="research_manager",
+        prompt="explicit prompt",
+        schema=SamplePayload,
+        tier="deep",
+        model="explicit-model",
+    )
+
+    assert provider.calls[0]["model"] == "role-deep-model"
+    assert provider.calls[1]["model"] == "quick-default"
+    assert provider.calls[2]["model"] == "explicit-model"

@@ -2,6 +2,7 @@
 provider = "anthropic"
 deep_model = "claude-sonnet-5"
 quick_model = "claude-haiku-4-5-20251001"
+role_models = {}
 temperature = 0.0
 max_retries = 3
 monthly_budget_usd = 25.0

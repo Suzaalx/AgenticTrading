@@ -188,6 +188,13 @@ def _conn(tmp_path):
     return conn
 
 
+class RoleAwareFakeLLM(FakeLLM):
+    def model_for_tier(self, tier: str, *, agent: str | None = None) -> str:
+        if agent == "sentiment_analyst":
+            return "sentiment-role-model"
+        return f"{tier}-fallback-model"
+
+
 @pytest.mark.asyncio
 async def test_remaining_analysts_return_typed_reports_and_emit_events(tmp_path) -> None:
     llm = FakeLLM(
@@ -251,6 +258,21 @@ async def test_sentiment_empty_input_short_circuits_without_llm_call(tmp_path) -
     assert llm.calls == []
     assert isinstance(await queue.get(), AgentStarted)
     assert isinstance(await queue.get(), AgentCompleted)
+
+
+@pytest.mark.asyncio
+async def test_agent_started_uses_role_model_override_for_display(tmp_path) -> None:
+    llm = RoleAwareFakeLLM({})
+    bus = EventBus()
+    queue = await bus.subscribe_queue()
+
+    report = await SentimentAnalyst(llm=llm, bus=bus, conn=_conn(tmp_path)).run(_state(news=[]))
+
+    started = await queue.get()
+    assert isinstance(started, AgentStarted)
+    assert started.model == "sentiment-role-model"
+    assert report.model == "sentiment-role-model"
+    assert llm.calls == []
 
 
 @pytest.mark.asyncio

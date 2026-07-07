@@ -17,6 +17,7 @@ class LLMSettings(BaseSettings):
     provider: str = "anthropic"
     deep_model: str = "claude-sonnet-5"
     quick_model: str = "claude-haiku-4-5-20251001"
+    role_models: dict[str, str] = Field(default_factory=dict)
     temperature: float = 0.0
     max_retries: int = 3
     monthly_budget_usd: float = 25.0

@@ -156,7 +156,10 @@ class ResearchDebater:
     def _model_for_start(self) -> str:
         model_for_tier = getattr(self.llm, "model_for_tier", None)
         if callable(model_for_tier):
-            return str(model_for_tier(self.tier))
+            try:
+                return str(model_for_tier(self.tier, agent=self.agent_name))
+            except TypeError:
+                return str(model_for_tier(self.tier))
         return str(getattr(self.llm, "model", "unknown"))
 
 
