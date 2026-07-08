@@ -171,3 +171,24 @@ TabbedContent {
 #chain-table {
     height: 18;
 }
+
+#live-rh-header {
+    height: 3;
+}
+
+#live-rh-accounts {
+    height: 12;
+}
+
+#live-rh-main-summary,
+#live-rh-agentic-summary {
+    width: 1fr;
+}
+
+#live-rh-positions {
+    height: 1fr;
+}
+
+#live-rh-options {
+    height: 10;
+}

@@ -18,6 +18,7 @@ from sentinel.core.events import EquityUpdated, Event, KillSwitchChanged, LogLin
 from sentinel.tui.screens.backtest import BacktestScreen
 from sentinel.tui.screens.dashboard import DashboardScreen
 from sentinel.tui.screens.history import HistoryScreen
+from sentinel.tui.screens.live_rh import LiveRhScreen
 from sentinel.tui.screens.logs import LogsScreen
 from sentinel.tui.screens.memory import MemoryScreen
 from sentinel.tui.screens.portfolio import PortfolioScreen
@@ -40,6 +41,7 @@ TAB_IDS = {
     "f5": "backtest",
     "f6": "memory",
     "f7": "logs",
+    "f8": "live-rh",
 }
 
 TUI_DISCLAIMER = "Research use only; not financial advice. Live losses are yours."
@@ -61,6 +63,7 @@ class SentinelApp(App[None]):
         Binding("f5", "switch_tab('backtest')", "F5 Backtest"),
         Binding("f6", "switch_tab('memory')", "F6 Memory"),
         Binding("f7", "switch_tab('logs')", "F7 Logs"),
+        Binding("f8", "switch_tab('live-rh')", "F8 Live RH"),
         Binding("r", "new_run", "Run"),
         Binding("b", "new_backtest", "Backtest"),
         Binding("c", "option_chain", "Chain", priority=True),
@@ -96,6 +99,7 @@ class SentinelApp(App[None]):
             yield TabPane("F5 Backtest", BacktestScreen(), id="backtest")
             yield TabPane("F6 Memory", MemoryScreen(), id="memory")
             yield TabPane("F7 Logs", LogsScreen(), id="logs")
+            yield TabPane("F8 Live RH", LiveRhScreen(), id="live-rh")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -268,4 +272,5 @@ class SentinelApp(App[None]):
             self.query_one(BacktestScreen),
             self.query_one(MemoryScreen),
             self.query_one(LogsScreen),
+            self.query_one(LiveRhScreen),
         ]

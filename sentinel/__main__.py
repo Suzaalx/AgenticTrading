@@ -282,6 +282,110 @@ def _redact(value: Any) -> Any:
 
 
 @app.command()
+def portfolio(
+    live: Annotated[bool, typer.Option("--live", help="Fetch live positions from Robinhood MCP")] = False,
+) -> None:
+    """Print portfolio — paper positions from SQLite, or live from Robinhood."""
+
+    if not live:
+        _print_paper_portfolio()
+        return
+
+    import asyncio
+
+    asyncio.run(_print_live_portfolio())
+
+
+def _print_paper_portfolio() -> None:
+    from sentinel.store.db import connect, default_db_path, run_migrations
+
+    conn = connect(default_db_path())
+    run_migrations(conn)
+    rows = conn.execute(
+        "SELECT symbol, qty, avg_cost, stop_pct, tp_pct FROM positions ORDER BY symbol"
+    ).fetchall()
+    console.print("[bold]Sentinel paper portfolio[/bold]")
+    if not rows:
+        console.print("No open positions.")
+        return
+    console.print(f"{'SYMBOL':<8} {'QTY':>10} {'AVG COST':>12} {'STOP %':>8} {'TP %':>8}")
+    console.print("─" * 52)
+    for row in rows:
+        stop = f"{row['stop_pct']:.1f}" if row["stop_pct"] is not None else "—"
+        tp = f"{row['tp_pct']:.1f}" if row["tp_pct"] is not None else "—"
+        console.print(
+            f"{row['symbol']:<8} {float(row['qty'] or 0):>10.4f} "
+            f"${float(row['avg_cost'] or 0):>11,.2f} {stop:>8} {tp:>8}"
+        )
+
+
+async def _print_live_portfolio() -> None:
+    import os
+
+    from sentinel.config.settings import load_settings
+    from sentinel.execution.rh_viewer import (
+        build_session,
+        dec,
+        fetch_accounts,
+        fetch_equity_positions,
+        fetch_option_positions,
+        fetch_portfolio,
+        mask,
+    )
+
+    settings = load_settings(Path.cwd())
+    session = build_session(settings.execution.robinhood_agentic)
+    if session._token is None:
+        console.print(
+            f"[red]RH_AGENTIC_MCP_TOKEN not set.[/red]\n"
+            f"Add it to your .env: {settings.execution.robinhood_agentic.mcp_token_env}=<token>\n"
+            "Get your token at robinhood.com/us/en/agentic-trading/"
+        )
+        raise typer.Exit(1)
+
+    console.print("[bold]Live Robinhood portfolio[/bold]")
+    accounts = await fetch_accounts(session)
+
+    for account in accounts:
+        acct_num = str(account.get("account_number") or "")
+        nickname = account.get("nickname") or account.get("brokerage_account_type") or ""
+        agentic_flag = "  ← agent trades here" if account.get("agentic_allowed") else ""
+        console.print(f"\n[bold]{mask(acct_num)}[/bold]  {nickname}{agentic_flag}")
+
+        port = await fetch_portfolio(session, acct_num)
+        total = dec(port.get("total_value"))
+        equity = dec(port.get("equity_value"))
+        cash = dec(port.get("cash"))
+        crypto = dec(port.get("crypto_value"))
+        console.print(f"  Portfolio  ${total:>12,.2f}")
+        console.print(f"  Equity     ${equity:>12,.2f}")
+        console.print(f"  Cash       ${cash:>12,.2f}")
+        if crypto > 0:
+            console.print(f"  Crypto     ${crypto:>12,.2f}")
+
+        positions = await fetch_equity_positions(session, acct_num)
+        if positions:
+            console.print(f"\n  {'SYMBOL':<8} {'QTY':>10} {'AVG COST':>12}")
+            console.print(f"  {'─'*8} {'─'*10} {'─'*12}")
+            for pos in positions:
+                sym = str(pos.get("symbol") or "")
+                qty = dec(pos.get("quantity"))
+                avg = dec(pos.get("average_buy_price"))
+                console.print(f"  {sym:<8} {float(qty):>10.4f} ${float(avg):>11,.2f}")
+
+        options = await fetch_option_positions(session, acct_num)
+        if options:
+            console.print(f"\n  Options ({len(options)} position(s))")
+            for opt in options:
+                sym = str(opt.get("chain_symbol") or opt.get("symbol") or "")
+                qty = dec(opt.get("quantity"))
+                avg = dec(opt.get("average_price"))
+                expiry = str(opt.get("expiration_date") or "—")[:10]
+                opt_type = str(opt.get("type") or "")
+                console.print(f"  {sym:<8} {opt_type:<6} qty={float(qty):g}  avg=${float(avg):,.2f}  exp={expiry}")
+
+
+@app.command()
 def run(
     symbol: Annotated[str, typer.Argument(help="Symbol to run through Sentinel")],
     date: Annotated[str | None, typer.Option("--date", help="YYYY-MM-DD as-of date")] = None,
@@ -727,6 +831,105 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
     except sqlite3.Error:
         return set()
+
+
+def _verify_and_report() -> None:
+    import asyncio
+    from sentinel.execution.mcp_session import RhAgenticMcpSession
+
+    console.print("\nVerifying connection to Robinhood MCP...")
+    try:
+        async def _verify() -> int:
+            session = RhAgenticMcpSession()
+            result = await session.list_tools()
+            tools = result.get("tools", [])
+            return len(tools) if isinstance(tools, list) else 0
+
+        n = asyncio.run(_verify())
+        console.print(f"[green]Connected![/green]  {n} MCP tools available.")
+        console.print("You can now run: sentinel portfolio --live")
+    except Exception as exc:
+        console.print(f"[yellow]Token saved but MCP verify failed: {exc}[/yellow]")
+
+
+@app.command()
+def auth(
+    revoke: Annotated[bool, typer.Option("--revoke", help="Remove stored tokens")] = False,
+    status: Annotated[bool, typer.Option("--status", help="Check auth status only")] = False,
+    code: Annotated[str | None, typer.Option("--code", help="Manually paste the ?code= from the redirect URL")] = None,
+) -> None:
+    """Authenticate with Robinhood via OAuth (opens browser once, stores tokens).
+
+    If the browser redirect fails, copy the ?code= value from the URL bar and run:
+      sentinel auth --code <value>
+    """
+
+    import asyncio
+    import time
+    from sentinel.execution.rh_auth import (
+        _TOKEN_FILE,
+        clear_tokens,
+        exchange_saved_code,
+        get_access_token,
+        load_tokens,
+        run_oauth_flow,
+    )
+
+    if revoke:
+        clear_tokens()
+        console.print("Robinhood tokens revoked.")
+        return
+
+    if status:
+        token = get_access_token()
+        if token:
+            tokens = load_tokens()
+            expires_in = int(tokens.get("expires_at", 0) - time.time())
+            console.print(f"[green]Authenticated[/green]  token expires in {expires_in}s  ({_TOKEN_FILE})")
+        else:
+            console.print("[red]Not authenticated.[/red]  Run: sentinel auth")
+        return
+
+    if code:
+        console.print("Exchanging authorization code for tokens...")
+        try:
+            asyncio.run(exchange_saved_code(code))
+        except Exception as exc:
+            console.print(f"[red]Token exchange failed: {exc}[/red]")
+            raise typer.Exit(1)
+        _verify_and_report()
+        return
+
+    # Already authenticated?
+    existing = get_access_token()
+    if existing:
+        tokens = load_tokens()
+        expires_in = int(tokens.get("expires_at", 0) - time.time())
+        console.print(f"[green]Already authenticated[/green]  (token valid for {expires_in}s)")
+        console.print("Use --revoke to force re-authentication.")
+        return
+
+    console.print("[bold]Robinhood OAuth authentication[/bold]")
+    console.print("This will open your browser. Log in and authorize Sentinel.")
+    console.print(RESEARCH_DISCLAIMER)
+    console.print()
+
+    try:
+        asyncio.run(run_oauth_flow())
+        _verify_and_report()
+    except TimeoutError:
+        console.print(
+            "\n[yellow]Timed out waiting for browser callback.[/yellow]\n"
+            "Visit the URL above in your browser, log in to Robinhood, then:\n"
+            "  1. After approving, your browser will redirect to localhost:54321\n"
+            "  2. If it shows 'connection refused', look at the URL bar — it contains ?code=XXXX\n"
+            "  3. Copy that code value and run:\n"
+            "       sentinel auth --code XXXX"
+        )
+        raise typer.Exit(1)
+    except Exception as exc:
+        console.print(f"[red]Authentication failed: {exc}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

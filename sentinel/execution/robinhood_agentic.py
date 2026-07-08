@@ -97,14 +97,18 @@ class RobinhoodAgenticBroker(LiveBroker):
         return self._result_from_response(submitted, order)
 
     async def cancel(self, client_order_id: str) -> bool:
-        """Cancel a working MCP order."""
+        """Cancel a working MCP order, trying equity cancel then option cancel."""
 
         await self._ensure_probe()
-        tool = self._tool_for("cancel")
-        if tool is None:
-            return False
-        result = await self._call_tool(tool, {"client_order_id": client_order_id})
-        return bool(result.get("ok", True))
+        for role in ("cancel", "cancel_option"):
+            tool = self._tool_for(role)
+            if tool is None:
+                continue
+            result = await self._call_tool(tool, {"client_order_id": client_order_id})
+            ok = result.get("ok")
+            if ok is None or bool(ok):
+                return True
+        return False
 
     async def open_orders(self) -> list[object]:
         """Return RH account orders for reconciliation/live panel use only."""
@@ -113,7 +117,9 @@ class RobinhoodAgenticBroker(LiveBroker):
         tool = self._tool_for("orders")
         if tool is None:
             return []
-        result = await self._call_tool(tool, {})
+        acct = self.settings.agentic_account_number
+        args: JsonObject = {"account_number": acct} if acct else {}
+        result = await self._call_tool(tool, args)
         return [
             {**item, "venue": "robinhood_agentic"}
             for item in _items(result)
@@ -127,7 +133,9 @@ class RobinhoodAgenticBroker(LiveBroker):
         tool = self._tool_for("positions")
         if tool is None:
             return []
-        result = await self._call_tool(tool, {})
+        acct = self.settings.agentic_account_number
+        args: JsonObject = {"account_number": acct} if acct else {}
+        result = await self._call_tool(tool, args)
         return [{**item, "venue": "robinhood_agentic"} for item in _items(result)]
 
     async def _ensure_probe(self) -> None:
@@ -183,6 +191,9 @@ class RobinhoodAgenticBroker(LiveBroker):
             "quantity": str(order.qty),
             "order_type": order.type,
         }
+        acct = self.settings.agentic_account_number
+        if acct:
+            base["account_number"] = acct
         if order.asset_type == "option":
             base["strategy"] = order.strategy
             base["legs"] = [_map_option_leg(leg) for leg in order.legs or []]
@@ -227,10 +238,30 @@ def _option_total_premium(order: Order, per_contract_price: Decimal, contracts: 
 
 
 def _build_mcp_session(settings: RobinhoodAgenticSettings) -> object:
-    endpoint = os.environ.get(settings.mcp_endpoint_env)
-    if not endpoint:
-        raise RuntimeError("Robinhood Agentic MCP endpoint environment variable is required")
-    raise RuntimeError("Inject an MCP session for Robinhood Agentic trading")
+    from sentinel.execution.mcp_session import RhAgenticMcpSession
+
+    endpoint = os.environ.get(settings.mcp_endpoint_env, "https://agent.robinhood.com/mcp/trading")
+
+    # Try direct HTTP session first (uses rh_auth tokens or RH_AGENTIC_MCP_TOKEN env var)
+    session = RhAgenticMcpSession(url=endpoint)
+    if session._token:
+        return session
+
+    # Fall back to claude CLI bridge (no separate OAuth needed — uses Claude Code's session)
+    if settings.use_claude_bridge:
+        try:
+            from sentinel.execution.claude_mcp_bridge import ClaudeMcpSession
+            return ClaudeMcpSession()
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"No Robinhood auth token found and claude CLI bridge unavailable: {exc}\n"
+                "Run 'sentinel auth' to authenticate directly, or install Claude Code."
+            ) from exc
+
+    raise RuntimeError(
+        f"Robinhood Agentic MCP token not found and claude bridge disabled.\n"
+        f"Set {settings.mcp_token_env} or run 'sentinel auth'."
+    )
 
 
 def _call_no_args(target: object, name: str) -> object:
@@ -267,22 +298,38 @@ def _tool_names(raw: object) -> list[str]:
 def _select_tools(names: Sequence[str]) -> dict[str, str]:
     lowered = {name: name.lower() for name in names}
     selected: dict[str, str | None] = {}
-    selected["equity_preview"] = _find(lowered, "preview", "equity") or _find(lowered, "preview", "stock")
+    # Robinhood Agentic Trading MCP uses "review_*_order" for previews
+    selected["equity_preview"] = (
+        _find(lowered, "preview", "equity")
+        or _find(lowered, "review", "equity")
+        or _find(lowered, "preview", "stock")
+    )
     selected["equity_submit"] = (
         _find(lowered, "submit", "equity")
         or _find(lowered, "place", "equity")
         or _find(lowered, "trade", "equity")
         or _find(lowered, "submit", "stock")
     )
-    selected["option_preview"] = _find(lowered, "preview", "option")
+    selected["option_preview"] = (
+        _find(lowered, "preview", "option")
+        or _find(lowered, "review", "option")
+    )
     selected["option_submit"] = (
         _find(lowered, "submit", "option")
         or _find(lowered, "place", "option")
         or _find(lowered, "trade", "option")
     )
-    selected["cancel"] = _find(lowered, "cancel")
+    selected["cancel"] = (
+        _find(lowered, "cancel", "equity")
+        or _find(lowered, "cancel", "order")
+        or _find(lowered, "cancel")
+    )
+    selected["cancel_option"] = _find(lowered, "cancel", "option")
     selected["orders"] = _find(lowered, "order", "list") or _find(lowered, "orders")
-    selected["positions"] = _find(lowered, "position")
+    selected["positions"] = (
+        _find(lowered, "position", "equity")
+        or _find(lowered, "position")
+    )
     return {key: value for key, value in selected.items() if value is not None}
 
 
@@ -295,7 +342,11 @@ def _find(lowered: Mapping[str, str], *needles: str) -> str | None:
 
 def _has_equity_tools(names: Sequence[str]) -> bool:
     lowered = [name.lower() for name in names]
-    return any(("equity" in name or "stock" in name) and "preview" in name for name in lowered)
+    # Robinhood MCP uses "review_equity_order" (not "preview")
+    return any(
+        ("equity" in name or "stock" in name) and ("preview" in name or "review" in name)
+        for name in lowered
+    )
 
 
 def _map_option_leg(leg: OptionLeg) -> JsonObject:
@@ -319,6 +370,16 @@ def _as_object(value: object) -> JsonObject:
             nested = cast(Mapping[str, object], content[0])
             if isinstance(nested.get("json"), Mapping):
                 return dict(cast(Mapping[str, object], nested["json"]))
+            # Robinhood MCP returns content[0].text as a JSON string
+            text = nested.get("text")
+            if isinstance(text, str):
+                import json as _json
+                try:
+                    parsed = _json.loads(text)
+                    if isinstance(parsed, dict):
+                        return dict(cast(Mapping[str, object], parsed))
+                except Exception:
+                    pass
         return dict(value_map)
     return {}
 

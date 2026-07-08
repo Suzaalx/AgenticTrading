@@ -1,11 +1,11 @@
 [llm]
 provider = "anthropic"
-deep_model = "claude-sonnet-5"
-quick_model = "claude-haiku-4-5-20251001"
-role_models = {}
+deep_model = "claude-opus-4-7"
+quick_model = "claude-sonnet-4-6"
+role_models = { trader = "claude-opus-4-7", portfolio_manager = "claude-opus-4-7", research_manager = "claude-opus-4-7" }
 temperature = 0.0
 max_retries = 3
-monthly_budget_usd = 25.0
+monthly_budget_usd = 15.0
 
 [pipeline]
 max_debate_rounds = 2
@@ -31,6 +31,9 @@ crypto_only = true
 [execution.robinhood_agentic]
 enabled = false
 mcp_endpoint_env = "RH_AGENTIC_MCP_URL"
+mcp_token_env = "RH_AGENTIC_MCP_TOKEN"
+agentic_account_number = ""
+use_claude_bridge = true
 
 [options]
 enabled = false
@@ -51,7 +54,7 @@ reconcile_interval_min = 5
 [schedule]
 enabled = false
 decision_cron = "30 9 * * 1-5"
-watchlist = ["NVDA","AAPL","SPY"]
+watchlist = ["SPY","NVDA"]
 
 [monitor]
 equity_interval_min = 5

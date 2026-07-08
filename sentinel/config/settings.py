@@ -75,6 +75,9 @@ class RobinhoodSettings(BaseSettings):
 class RobinhoodAgenticSettings(BaseSettings):
     enabled: bool = False
     mcp_endpoint_env: str = "RH_AGENTIC_MCP_URL"
+    mcp_token_env: str = "RH_AGENTIC_MCP_TOKEN"
+    agentic_account_number: str = ""
+    use_claude_bridge: bool = True
 
 
 class ExecutionSettings(BaseSettings):

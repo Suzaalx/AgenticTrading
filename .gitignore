@@ -21,3 +21,11 @@ __pycache__/
 # Coverage data
 .coverage
 .coverage.*
+
+# Sentinel auth tokens (written by sentinel auth)
+rh_tokens.json
+rh_pending_auth.json
+
+# Logs
+*.log
+sentinel_reflect.log
