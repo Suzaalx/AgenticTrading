@@ -25,7 +25,8 @@ def seed_dashboard_store() -> None:
             (datetime.now(UTC).isoformat(), 12345.67, 4200.00, 123.45),
         )
         conn.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs (run_id, symbol, as_of, mode, status, action, verdict, cost_usd, tokens, "
+            "created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "01JRUN",
                 "NVDA",

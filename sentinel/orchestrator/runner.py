@@ -145,6 +145,7 @@ class OrchestratorRunner:
         assert_within_budget(self.conn, Decimal(str(self.settings.llm.monthly_budget_usd)))
         max_rounds = self._rounds_for_depth(depth)
         state = initial_state(symbol, as_of=as_of, run_id=run_id)
+        state.debate_enabled = self.settings.pipeline.debate_enabled
         store = RunCheckpointStore(state.run_id)
         self._persist_run(state)
         async with self._active_lock:
@@ -193,6 +194,7 @@ class OrchestratorRunner:
         """Agent-replay seam: run a single supplied snapshot through post-data nodes."""
 
         state = initial_state(snapshot.symbol, as_of=snapshot.as_of, run_id=snapshot.run_id, mode="backtest_step")
+        state.debate_enabled = self.settings.pipeline.debate_enabled
         state.snapshot = snapshot
         state.option_chain = option_chain
         store = RunCheckpointStore(state.run_id.replace(":", "_"))
@@ -213,6 +215,7 @@ class OrchestratorRunner:
             execution_router=self._execution_router(),
             max_debate_rounds=max_rounds,
             max_risk_rounds=max(1, min(max_rounds, self.settings.pipeline.max_risk_discuss_rounds)),
+            debate_enabled=self.settings.pipeline.debate_enabled,
             checkpoint=store.save,
             cancel_check=lambda run_id: RunCheckpointStore(run_id).is_cancelled(),
         )
@@ -254,6 +257,7 @@ class OrchestratorRunner:
                 verdict=state.pm_decision.verdict if state.pm_decision is not None else None,
                 cost_usd=state.total_cost_usd,
                 tokens=state.total_tokens,
+                debate_enabled=state.debate_enabled,
                 finished_at=datetime.now(UTC)
                 if state.status in {"completed", "failed", "cancelled", "halted"}
                 else None,

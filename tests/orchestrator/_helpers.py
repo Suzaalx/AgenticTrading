@@ -76,13 +76,16 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
     return active
 
 
-def settings(*, budget: float = 25.0, always_run_risk: bool = False) -> Settings:
+def settings(
+    *, budget: float = 25.0, always_run_risk: bool = False, debate_enabled: bool = True
+) -> Settings:
     base = load_settings(Path.cwd())
     return base.model_copy(
         update={
             "llm": base.llm.model_copy(update={"monthly_budget_usd": budget}),
             "pipeline": base.pipeline.model_copy(
                 update={
+                    "debate_enabled": debate_enabled,
                     "max_debate_rounds": 1,
                     "max_risk_discuss_rounds": 1,
                     "always_run_risk_debate": always_run_risk,
@@ -177,12 +180,18 @@ def fake_llm(*, action: str = "BUY", verdict: str = "APPROVE") -> FakeLLM:
     )
 
 
-def runner(tmp_path: Path, *, llm: FakeLLM | None = None, mandate_value: Mandate | None = None) -> OrchestratorRunner:
+def runner(
+    tmp_path: Path,
+    *,
+    llm: FakeLLM | None = None,
+    mandate_value: Mandate | None = None,
+    debate_enabled: bool = True,
+) -> OrchestratorRunner:
     bus = EventBus()
     return OrchestratorRunner(
         bus=bus,
         conn=conn(tmp_path),
-        settings=settings(),
+        settings=settings(debate_enabled=debate_enabled),
         mandate=mandate_value or mandate(),
         llm=llm or fake_llm(),
         router=FixtureRouter(),  # type: ignore[arg-type]
