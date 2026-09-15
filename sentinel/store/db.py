@@ -6,7 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from sentinel.store.migrations import DDL_STATEMENTS
+from sentinel.store.migrations import ADDED_COLUMNS, DDL_STATEMENTS
 
 
 def sentinel_home() -> Path:
@@ -41,4 +41,9 @@ def run_migrations(conn: sqlite3.Connection) -> None:
 
     for statement in DDL_STATEMENTS:
         conn.execute(statement)
+    for table, column, definition in ADDED_COLUMNS:
+        # PRAGMA rows are (cid, name, type, ...); index access works with or without row_factory.
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.commit()

@@ -23,7 +23,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS backtests (bt_id TEXT PRIMARY KEY, config_json TEXT, metrics_json TEXT,
                         equity_json TEXT, created_at TEXT)""",
     """CREATE TABLE IF NOT EXISTS costs     (ts TEXT, run_id TEXT, agent TEXT, model TEXT, tokens_in INT,
-                        tokens_out INT, cost_usd REAL)""",
+                        tokens_out INT, cost_usd REAL, latency_ms INT)""",
     """CREATE TABLE IF NOT EXISTS option_positions (position_id TEXT PRIMARY KEY, underlying TEXT,
                         strategy TEXT, legs_json TEXT, open_premium TEXT, max_loss TEXT, collateral TEXT,
                         opened_at TEXT, expiry TEXT, horizon_days INT, stop_loss_pct_premium REAL,
@@ -55,4 +55,11 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "iv_history",
     "live_orders",
     "reconciliations",
+)
+
+
+# Columns added after a table first shipped. Applied idempotently by run_migrations so
+# existing ~/.sentinel databases pick them up without a manual migration step.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("costs", "latency_ms", "INT"),
 )

@@ -13,14 +13,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sentinel.core.models import Mandate
 
 
+class LLMProviderSettings(BaseSettings):
+    """Optional per-provider overrides for OpenAI-compatible open-weight backends."""
+
+    base_url: str | None = None
+    api_key_env: str | None = None
+
+
 class LLMSettings(BaseSettings):
-    provider: str = "anthropic"
-    deep_model: str = "claude-sonnet-5"
-    quick_model: str = "claude-haiku-4-5-20251001"
+    provider: str = "groq"
+    deep_model: str = "llama-3.3-70b-versatile"
+    quick_model: str = "llama-3.1-8b-instant"
     role_models: dict[str, str] = Field(default_factory=dict)
     temperature: float = 0.0
+    max_tokens: int = 4096
     max_retries: int = 3
     monthly_budget_usd: float = 25.0
+    providers: dict[str, LLMProviderSettings] = Field(default_factory=dict)
 
 
 class PipelineSettings(BaseSettings):
@@ -133,7 +142,25 @@ def _parse_env_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
+        value = value.strip()
+        if not (value.startswith('"') or value.startswith("'")) and " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        values[key.strip()] = value.strip('"').strip("'")
+    return values
+
+
+def export_env_file(root: Path | None = None) -> dict[str, str]:
+    """Load ``.env`` into ``os.environ`` (without overriding real env vars) and return it.
+
+    Provider adapters read API keys from ``os.environ``; this keeps ".env only" workable
+    without asking users to export keys in their shell.
+    """
+
+    base = root or Path.cwd()
+    values = _parse_env_file(base / ".env")
+    for key, value in values.items():
+        if value:
+            os.environ.setdefault(key, value)
     return values
 
 
@@ -172,7 +199,7 @@ def load_settings(root: Path | None = None) -> Settings:
 
     base = root or Path.cwd()
     data = _toml_data(base / "config.toml")
-    env = {**_parse_env_file(base / ".env"), **os.environ}
+    env = {**export_env_file(base), **os.environ}
     return Settings.model_validate(_overlay_env(data, env))
 
 

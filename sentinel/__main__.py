@@ -102,10 +102,20 @@ def doctor(
         conn.close()
     console.print("[bold]Sentinel doctor[/bold]")
     console.print(f"Python: {platform.python_version()} ({platform.machine()})")
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ALPHA_VANTAGE_KEY", "FINNHUB_KEY"):
+    for key in (
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "ALPHA_VANTAGE_KEY",
+        "FINNHUB_KEY",
+    ):
         console.print(f"{key}: {'present' if bool(os.environ.get(key)) else 'absent'}")
     console.print(f"DB writable: yes ({default_db_path()})")
-    console.print(f"config.toml valid: yes (provider={settings.llm.provider})")
+    console.print(
+        f"config.toml valid: yes (provider={settings.llm.provider}, "
+        f"quick={settings.llm.quick_model}, deep={settings.llm.deep_model})"
+    )
     console.print(f"mandate.toml valid: yes ({len(mandate.symbol_universe)} symbols)")
     _print_options_doctor(settings, mandate)
     _print_kill_switch_doctor()

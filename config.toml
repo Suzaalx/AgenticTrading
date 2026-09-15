@@ -1,11 +1,26 @@
 [llm]
-provider = "anthropic"
-deep_model = "claude-opus-4-7"
-quick_model = "claude-sonnet-4-6"
-role_models = { trader = "claude-opus-4-7", portfolio_manager = "claude-opus-4-7", research_manager = "claude-opus-4-7" }
+# provider: groq | gemini | ollama | anthropic | openai | openai_compatible
+# Free / open-weight backends are the default; Anthropic stays selectable but is opt-in.
+# Keys come from .env only (GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, ...).
+provider = "groq"
+deep_model = "llama-3.3-70b-versatile"
+quick_model = "llama-3.1-8b-instant"
+role_models = { trader = "llama-3.3-70b-versatile", portfolio_manager = "llama-3.3-70b-versatile", research_manager = "llama-3.3-70b-versatile" }
 temperature = 0.0
+max_tokens = 4096
 max_retries = 3
 monthly_budget_usd = 15.0
+
+# Per-provider overrides (all optional). Built-in defaults:
+#   groq   -> https://api.groq.com/openai/v1                       key: GROQ_API_KEY
+#   gemini -> https://generativelanguage.googleapis.com/v1beta/openai/  key: GEMINI_API_KEY
+#   ollama -> http://localhost:11434/v1 (or OLLAMA_BASE_URL)         key: none needed
+# Example open-weight model names per provider:
+#   groq:   llama-3.3-70b-versatile, llama-3.1-8b-instant, qwen/qwen3-32b, openai/gpt-oss-120b
+#   gemini: gemma-3-27b-it (open-weight), gemini-2.5-flash (free tier, not open-weight)
+#   ollama: llama3.1, qwen3, phi4, gemma3
+[llm.providers.ollama]
+base_url = "http://localhost:11434/v1"
 
 [pipeline]
 max_debate_rounds = 2
