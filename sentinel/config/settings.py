@@ -33,6 +33,9 @@ class LLMSettings(BaseSettings):
 
 
 class PipelineSettings(BaseSettings):
+    # Ablation switch: false skips the bull/bear debate + research manager and routes analyst
+    # outputs straight to the trader via a deterministic roll-up (no extra LLM call).
+    debate_enabled: bool = True
     max_debate_rounds: int = 2
     max_risk_discuss_rounds: int = 1
     always_run_risk_debate: bool = False

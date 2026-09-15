@@ -21,6 +21,7 @@ class RunRecord:
     tokens: int = 0
     created_at: datetime | None = None
     finished_at: datetime | None = None
+    debate_enabled: bool | None = None
 
 
 def insert_run(conn: sqlite3.Connection, record: RunRecord) -> None:
@@ -28,8 +29,9 @@ def insert_run(conn: sqlite3.Connection, record: RunRecord) -> None:
 
     conn.execute(
         """INSERT OR REPLACE INTO runs
-        (run_id, symbol, as_of, mode, status, action, verdict, cost_usd, tokens, created_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (run_id, symbol, as_of, mode, status, action, verdict, cost_usd, tokens, created_at, finished_at,
+         debate_enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.run_id,
             record.symbol,
@@ -42,6 +44,7 @@ def insert_run(conn: sqlite3.Connection, record: RunRecord) -> None:
             record.tokens,
             (record.created_at or datetime.now()).isoformat(),
             record.finished_at.isoformat() if record.finished_at else None,
+            None if record.debate_enabled is None else int(record.debate_enabled),
         ),
     )
     conn.commit()
@@ -65,4 +68,5 @@ def get_run(conn: sqlite3.Connection, run_id: str) -> RunRecord | None:
         tokens=int(row["tokens"] or 0),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
+        debate_enabled=None if row["debate_enabled"] is None else bool(row["debate_enabled"]),
     )

@@ -333,6 +333,7 @@ uv run sentinel portfolio         # print paper portfolio
 uv run sentinel portfolio --live  # print live Robinhood portfolio
 uv run sentinel history           # recent decisions
 uv run sentinel history --symbol SPY
+uv run sentinel history --debate off   # only runs made with [pipeline] debate_enabled = false
 uv run sentinel reflect           # run reflection job
 uv run sentinel memory list       # list stored lessons
 uv run sentinel backtest --symbol SPY --strategy sma_cross
