@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal, cast
 
+from sentinel.agents.analyst_rollup import build_analyst_rollup_plan
 from sentinel.agents.analysts import (
     FundamentalsAnalyst,
     MarketAnalyst,
@@ -39,6 +40,7 @@ from sentinel.core.events import (
     DecisionMade,
     EquityUpdated,
     GateEvaluated,
+    LogLine,
     OrderSubmitted,
     RunStarted,
     StageChanged,
@@ -171,6 +173,7 @@ class OrchestratorGraph:
         execution_router: ExecutionRouter | None = None,
         max_debate_rounds: int | None = None,
         max_risk_rounds: int | None = None,
+        debate_enabled: bool | None = None,
         checkpoint: CheckpointCallback | None = None,
         cancel_check: CancelCheck | None = None,
     ) -> None:
@@ -185,6 +188,9 @@ class OrchestratorGraph:
         self.execution_router = execution_router or ExecutionRouter(paper=self.broker)
         self.max_debate_rounds = max_debate_rounds
         self.max_risk_rounds = max_risk_rounds
+        self.debate_enabled = (
+            settings.pipeline.debate_enabled if debate_enabled is None else debate_enabled
+        )
         self.checkpoint = checkpoint
         self.cancel_check = cancel_check or (lambda _run_id: False)
 
@@ -290,7 +296,17 @@ class OrchestratorGraph:
 
     async def _research_debate(self, state: RunState) -> None:
         state.status = "debating"
+        state.debate_enabled = self.debate_enabled
         await self._stage(state, "research_debate")
+        if not self.debate_enabled:
+            await self.bus.publish(
+                LogLine(
+                    level="info",
+                    message="research debate skipped (pipeline.debate_enabled=false)",
+                    context={"run_id": state.run_id},
+                )
+            )
+            return
         lessons = self._recall_lessons(state)
         await run_research_debate(
             state,
@@ -304,6 +320,15 @@ class OrchestratorGraph:
     async def _research_manager(self, state: RunState) -> None:
         state.status = "debating"
         await self._stage(state, "research_manager")
+        if not self.debate_enabled:
+            # Debate-off ablation: analyst outputs go straight to the trader through a
+            # deterministic roll-up so the Trader/PM/risk contracts stay unchanged.
+            plan = build_analyst_rollup_plan(state)
+            state.investment_plan = plan
+            self._persist_report(plan)
+            self._build_option_candidates(state)
+            self._rollup_costs(state)
+            return
         lessons = self._recall_lessons(state)
         plan = cast(
             InvestmentPlan,

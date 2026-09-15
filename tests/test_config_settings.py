@@ -41,3 +41,14 @@ deep_model = "deep-default"
     settings = load_settings(tmp_path)
 
     assert settings.llm.role_models == {}
+
+
+def test_debate_enabled_defaults_true_and_reads_toml_and_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("SENTINEL_PIPELINE__DEBATE_ENABLED", raising=False)
+    assert load_settings(tmp_path).pipeline.debate_enabled is True
+
+    (tmp_path / "config.toml").write_text("[pipeline]\ndebate_enabled = false\n", encoding="utf-8")
+    assert load_settings(tmp_path).pipeline.debate_enabled is False
+
+    monkeypatch.setenv("SENTINEL_PIPELINE__DEBATE_ENABLED", "true")
+    assert load_settings(tmp_path).pipeline.debate_enabled is True

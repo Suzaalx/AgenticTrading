@@ -35,12 +35,12 @@ class HistoryScreen(Widget):
     def on_mount(self) -> None:
         table = self.query_one("#history-runs", DataTable)
         table.cursor_type = "row"
-        table.add_columns("DATE", "SYM", "ACTION", "VERDICT", "COST")
+        table.add_columns("DATE", "SYM", "ACTION", "VERDICT", "COST", "DEBATE")
         self.hydrate()
 
     def hydrate(self) -> None:
         rows = fetch_rows(
-            "SELECT run_id, symbol, as_of, action, verdict, cost_usd, status "
+            "SELECT run_id, symbol, as_of, action, verdict, cost_usd, status, debate_enabled "
             "FROM runs ORDER BY COALESCE(finished_at, created_at, as_of) DESC LIMIT 50"
         )
         table = self.query_one("#history-runs", DataTable)
@@ -54,6 +54,7 @@ class HistoryScreen(Widget):
                 row["action"] or "—",
                 row["verdict"] or row["status"] or "—",
                 money(row["cost_usd"]),
+                "—" if row["debate_enabled"] is None else ("on" if row["debate_enabled"] else "off"),
                 key=row["run_id"],
             )
         self._render_detail(self._run_ids[0] if self._run_ids else None)
