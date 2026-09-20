@@ -543,6 +543,17 @@ def eval_run(
     finrl_policy: Annotated[
         Path | None, typer.Option("--finrl-policy", help="Policy export for the finrl pipeline (default: $FINRL_POLICY_PATH or stub)")
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Use this model for every agent role (overrides quick/deep/role_models)"),
+    ] = None,
+    history_bars: Annotated[
+        int | None, typer.Option("--history-bars", help="Override [pipeline].analyst_history_bars for this run")
+    ] = None,
+    max_position_pct: Annotated[
+        float | None,
+        typer.Option("--max-position-pct", help="Override mandate max_position_pct_equity for agent pipelines (e.g. 100)"),
+    ] = None,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Where experiment.db + results.csv go")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print rows as JSON instead of a table")] = False,
 ) -> None:
@@ -576,9 +587,23 @@ def eval_run(
             **({"finrl_policy": finrl_policy} if finrl_policy is not None else {}),
         },
         csv_paths=csv_paths,
+        max_position_pct_equity=max_position_pct,
         out_dir=out_dir,
     )
-    rows = run_experiment(spec)
+    settings = load_settings(Path.cwd())
+    if model is not None:
+        settings = settings.model_copy(
+            update={
+                "llm": settings.llm.model_copy(
+                    update={"quick_model": model, "deep_model": model, "role_models": {}}
+                )
+            }
+        )
+    if history_bars is not None:
+        settings = settings.model_copy(
+            update={"pipeline": settings.pipeline.model_copy(update={"analyst_history_bars": history_bars})}
+        )
+    rows = run_experiment(spec, settings=settings)
     if json_output:
         console.print(json.dumps([row.as_record() for row in rows], indent=2, default=str))
     else:

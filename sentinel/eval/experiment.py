@@ -58,6 +58,9 @@ class ExperimentSpec:
     strategy_params: Mapping[str, Any] = field(default_factory=dict)
     csv_paths: Mapping[str, Path] = field(default_factory=dict)  # symbol -> offline OHLCV CSV
     benchmark_symbol: str | None = None  # None -> the traded symbol itself
+    # Override mandate.max_position_pct_equity for agent pipelines (e.g. 100 to compare at
+    # full exposure against buy-and-hold). None keeps the project mandate (10% by default).
+    max_position_pct_equity: float | None = None
     out_dir: Path | None = None
     bootstrap_iterations: int = 0  # bootstrap CIs are slow and not part of the comparison table
 
@@ -85,6 +88,7 @@ class ExperimentSpec:
                 "strategy_params": dict(self.strategy_params),
                 "csv_paths": {k: str(v) for k, v in self.csv_paths.items()},
                 "benchmark_symbol": self.benchmark_symbol,
+                "max_position_pct_equity": self.max_position_pct_equity,
             },
             sort_keys=True,
             default=str,
@@ -134,6 +138,8 @@ async def run_experiment_async(
     specs = [get_pipeline(name) for name in spec.pipelines]
     settings = settings or load_settings(Path.cwd())
     mandate = mandate or load_mandate(Path.cwd())
+    if spec.max_position_pct_equity is not None:
+        mandate = mandate.model_copy(update={"max_position_pct_equity": float(spec.max_position_pct_equity)})
     out_dir = spec.resolved_out_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     owned_conn = conn is None
@@ -167,7 +173,9 @@ async def run_experiment_async(
             for pipeline_spec in specs:
                 rows.append(await _run_one(ctx, pipeline_spec, symbol, frame))
         if write_csv:
-            results_to_csv(rows, spec.csv_path())
+            # The CSV is the whole experiment (every stored pipeline row), not just this call,
+            # so pipelines can be run incrementally under one experiment id.
+            results_to_csv(load_result_rows(conn, spec.experiment_id), spec.csv_path())
         if print_table:
             render_results_table(rows)
     finally:
@@ -211,7 +219,7 @@ async def _run_one(
     }
     if built.kind == "rule" and spec.strategy_params:
         row_config["strategy_params"] = {k: str(v) if isinstance(v, Path) else v for k, v in spec.strategy_params.items()}
-    for key in ("policy", "stub"):
+    for key in ("policy", "stub", "llm"):
         if key in decision_summary:
             row_config[key] = decision_summary[key]
     row = build_result_row(

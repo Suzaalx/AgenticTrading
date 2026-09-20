@@ -36,6 +36,9 @@ class PipelineSettings(BaseSettings):
     # Ablation switch: false skips the bull/bear debate + research manager and routes analyst
     # outputs straight to the trader via a deterministic roll-up (no extra LLM call).
     debate_enabled: bool = True
+    # Bars of OHLCV + indicators rendered into the market analyst prompt (SPEC default 90).
+    # Lower it on tight free-tier token-per-minute limits (e.g. 30 -> ~2.5k prompt tokens).
+    analyst_history_bars: int = 90
     max_debate_rounds: int = 2
     max_risk_discuss_rounds: int = 1
     always_run_risk_debate: bool = False
