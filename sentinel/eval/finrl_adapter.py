@@ -129,7 +129,7 @@ class TablePolicy:
 def build_observation(context: BarContext) -> Observation:
     """Compute the shared feature vector from the bar history available at ``context``."""
 
-    close = pd.to_numeric(context.history["close"], errors="coerce").astype(float)
+    close = cast(pd.Series, pd.to_numeric(context.history["close"], errors="coerce")).astype(float)
     values = (
         _pct_change(close, 1),
         _pct_change(close, 5),
@@ -176,7 +176,7 @@ def train_policy(bars: pd.DataFrame, *, out_path: Path, **_: Any) -> Path:
        harness supplies the same symbols/window/metrics as every other pipeline.
     """
 
-    _ = (bars, out_path)
+    del bars, out_path
     msg = "FinRL training is not wired this cycle; see sentinel/eval/finrl_adapter.py::train_policy"
     raise NotImplementedError(msg)
 
