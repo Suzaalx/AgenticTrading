@@ -540,6 +540,9 @@ def eval_run(
     short_window: Annotated[int, typer.Option("--short-window", help="sma_cross short window")] = 20,
     long_window: Annotated[int, typer.Option("--long-window", help="sma_cross long window")] = 50,
     starting_cash: Annotated[float | None, typer.Option("--starting-cash")] = None,
+    finrl_policy: Annotated[
+        Path | None, typer.Option("--finrl-policy", help="Policy export for the finrl pipeline (default: $FINRL_POLICY_PATH or stub)")
+    ] = None,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Where experiment.db + results.csv go")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print rows as JSON instead of a table")] = False,
 ) -> None:
@@ -567,7 +570,11 @@ def eval_run(
         pipelines=list(pipeline),
         cadence=normalized_cadence,
         starting_cash=starting_cash,
-        strategy_params={"short_window": short_window, "long_window": long_window},
+        strategy_params={
+            "short_window": short_window,
+            "long_window": long_window,
+            **({"finrl_policy": finrl_policy} if finrl_policy is not None else {}),
+        },
         csv_paths=csv_paths,
         out_dir=out_dir,
     )
