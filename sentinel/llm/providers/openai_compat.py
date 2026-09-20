@@ -171,8 +171,10 @@ class OpenAICompatibleProvider:
     async def _create_with_mode_negotiation(
         self, request: dict[str, Any], schema_json: dict[str, Any] | None
     ) -> Any:
+        client = self.client
+        assert client is not None  # complete_structured() raises before we get here
         if schema_json is None:
-            return await self.client.chat.completions.create(**request)
+            return await client.chat.completions.create(**request)
         modes: list[StructuredMode] = (
             [self._structured_mode]
             if self._structured_mode is not None
@@ -185,7 +187,7 @@ class OpenAICompatibleProvider:
             if response_format is not None:
                 attempt["response_format"] = response_format
             try:
-                response = await self.client.chat.completions.create(**attempt)
+                response = await client.chat.completions.create(**attempt)
             except Exception as exc:  # provider SDK error types vary
                 if mode == modes[-1] or not _is_unsupported_format_error(exc):
                     raise
