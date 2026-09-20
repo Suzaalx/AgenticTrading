@@ -79,6 +79,15 @@ def _build_sentinel(*, debate_enabled: bool) -> Callable[[ExperimentContext, str
         settings = ctx.settings.model_copy(
             update={"pipeline": ctx.settings.pipeline.model_copy(update={"debate_enabled": debate_enabled})}
         )
+        llm_config = {
+            "provider": settings.llm.provider,
+            "quick_model": settings.llm.quick_model,
+            "deep_model": settings.llm.deep_model,
+            "role_models": dict(settings.llm.role_models),
+            "analyst_history_bars": settings.pipeline.analyst_history_bars,
+            "max_debate_rounds": settings.pipeline.max_debate_rounds,
+            "max_position_pct_equity": ctx.mandate.max_position_pct_equity,
+        }
         runner = OrchestratorRunner(
             bus=ctx.bus,
             conn=ctx.conn,
@@ -88,10 +97,13 @@ def _build_sentinel(*, debate_enabled: bool) -> Callable[[ExperimentContext, str
             router=ctx.router,
         )
         adapter = SentinelPipelineAdapter(runner=runner, mandate=ctx.mandate, equity_hint=ctx.starting_cash)
+        def summarize() -> dict[str, Any]:
+            return {**summarize_traces(adapter.traces), "llm": llm_config}
+
         return BuiltPipeline(
             kind="agent",
             agent=adapter,
-            summarize=lambda: summarize_traces(adapter.traces),
+            summarize=summarize,
             notes=lambda: [
                 f"{t.as_of}: {t.status} {t.error}" for t in adapter.traces if t.status == "failed" or t.error
             ],

@@ -17,6 +17,9 @@ from sentinel.llm.contracts import LLMResult
 T = TypeVar("T")
 Tier = Literal["quick", "deep"]
 
+RATE_LIMIT_MAX_RETRIES = 6
+RATE_LIMIT_MAX_SLEEP_SECONDS = 90.0
+
 # Free / open-weight backends served through the OpenAI-compatible adapter.
 OPEN_WEIGHT_PROVIDERS: frozenset[str] = frozenset({"groq", "gemini", "ollama"})
 SUPPORTED_PROVIDERS: frozenset[str] = OPEN_WEIGHT_PROVIDERS | {
@@ -115,6 +118,7 @@ class LLMGateway:
 
         max_retries = max(0, int(self.settings.llm.max_retries))
         attempt = 0
+        rate_limit_attempt = 0
         started = time.perf_counter()
         while True:
             try:
@@ -122,7 +126,15 @@ class LLMGateway:
                 break
             except (ValidationError, ValueError, TypeError):
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_rate_limited(exc):
+                    # Free tiers (Groq/Gemini) throttle with 429 + Retry-After; waiting is the
+                    # right move, and it should not burn the transport-error retry budget.
+                    rate_limit_attempt += 1
+                    if rate_limit_attempt > RATE_LIMIT_MAX_RETRIES:
+                        raise
+                    await asyncio.sleep(_retry_after_seconds(exc, rate_limit_attempt))
+                    continue
                 attempt += 1
                 if attempt > max_retries:
                     raise
@@ -207,3 +219,25 @@ def _json_payload(text: str) -> Any:
         if start != -1 and end > start:
             return json.loads(stripped[start : end + 1])
         raise
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return int(status) == 429
+    return "rate limit" in str(exc).lower() or "429" in str(exc)
+
+
+def _retry_after_seconds(exc: Exception, attempt: int) -> float:
+    """Honour Retry-After when the SDK exposes it; otherwise back off exponentially."""
+
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        try:
+            if raw is not None:
+                return min(max(float(raw), 0.5), RATE_LIMIT_MAX_SLEEP_SECONDS)
+        except (TypeError, ValueError):
+            pass
+    return min(2.0 ** attempt, RATE_LIMIT_MAX_SLEEP_SECONDS)
