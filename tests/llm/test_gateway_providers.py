@@ -111,3 +111,63 @@ def test_env_file_keys_are_exported_to_process_env(tmp_path: Path, monkeypatch: 
     assert os.environ["GROQ_API_KEY"] == "gsk_test"
     assert os.environ["GEMINI_API_KEY"] == "from-shell"  # real env wins over .env
     assert "EMPTY" not in os.environ
+
+
+class _RateLimited(Exception):
+    status_code = 429
+
+    def __init__(self, retry_after: str | None) -> None:
+        super().__init__("rate limit exceeded")
+        headers = {} if retry_after is None else {"retry-after": retry_after}
+        self.response = type("Resp", (), {"headers": headers})()
+
+
+class RateLimitingProvider:
+    def __init__(self, failures: int, retry_after: str | None = "0.01") -> None:
+        self.failures = failures
+        self.retry_after = retry_after
+        self.calls = 0
+
+    async def complete_structured(self, **kwargs: Any) -> LLMResult[Any]:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise _RateLimited(self.retry_after)
+        return LLMResult(content='{"value": 1}', structured={"value": 1}, model="m")
+
+
+@pytest.mark.asyncio
+async def test_gateway_waits_out_rate_limits_without_spending_transport_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sentinel.llm.gateway as gateway_module
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+    provider = RateLimitingProvider(failures=3, retry_after="7")
+    gateway = LLMGateway(settings=Settings(llm=LLMSettings(provider="groq", max_retries=0)), provider=provider)
+
+    result = await gateway.complete_structured("t", "p", SamplePayload)
+
+    assert result.structured.value == 1
+    assert provider.calls == 4
+    assert sleeps == [7.0, 7.0, 7.0]  # Retry-After honoured; max_retries=0 did not apply
+
+
+@pytest.mark.asyncio
+async def test_gateway_gives_up_after_too_many_rate_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sentinel.llm.gateway as gateway_module
+
+    async def fake_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(gateway_module.asyncio, "sleep", fake_sleep)
+    provider = RateLimitingProvider(failures=99, retry_after=None)
+    gateway = LLMGateway(settings=Settings(llm=LLMSettings(provider="groq", max_retries=0)), provider=provider)
+
+    with pytest.raises(_RateLimited):
+        await gateway.complete_structured("t", "p", SamplePayload)
+    assert provider.calls == gateway_module.RATE_LIMIT_MAX_RETRIES + 1

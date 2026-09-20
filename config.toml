@@ -26,6 +26,9 @@ base_url = "http://localhost:11434/v1"
 # debate_enabled = false skips the bull/bear research debate (ablation); analyst reports are
 # rolled up deterministically and handed straight to the trader. Recorded on each run row.
 debate_enabled = true
+# Bars rendered into the market-analyst prompt (SPEC default 90 ~ 7.5k tokens). Free tiers
+# with small tokens-per-minute caps (Groq 8B: 6k TPM) need ~30.
+analyst_history_bars = 90
 max_debate_rounds = 2
 max_risk_discuss_rounds = 1
 always_run_risk_debate = false
