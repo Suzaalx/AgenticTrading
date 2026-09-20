@@ -193,14 +193,30 @@ class OrchestratorRunner:
     ) -> object:
         """Agent-replay seam: run a single supplied snapshot through post-data nodes."""
 
+        state = await self.decide_from_snapshot(snapshot, option_chain=option_chain)
+        return state.option_proposal or state.trade_proposal
+
+    async def decide_from_snapshot(
+        self,
+        snapshot,
+        *,
+        option_chain: OptionChainSnapshot | None = None,
+        stop_after: NodeName | None = None,
+    ) -> RunState:
+        """Run a point-in-time snapshot through the graph from ``analysts`` and return the state.
+
+        ``stop_after="portfolio_manager"`` yields the trader proposal + PM verdict without
+        touching the mandate gate / paper broker, which is what the evaluation harness needs
+        when the backtest engine owns fills.
+        """
+
         state = initial_state(snapshot.symbol, as_of=snapshot.as_of, run_id=snapshot.run_id, mode="backtest_step")
         state.debate_enabled = self.settings.pipeline.debate_enabled
         state.snapshot = snapshot
         state.option_chain = option_chain
         store = RunCheckpointStore(state.run_id.replace(":", "_"))
         graph = self._graph(store, max_rounds=self.settings.pipeline.max_debate_rounds)
-        state = await graph.run(state, start_at="analysts")
-        return state.option_proposal or state.trade_proposal
+        return await graph.run(state, start_at="analysts", stop_after=stop_after)
 
     def _graph(self, store: RunCheckpointStore, *, max_rounds: int) -> OrchestratorGraph:
         return OrchestratorGraph(
