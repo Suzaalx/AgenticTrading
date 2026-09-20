@@ -87,6 +87,7 @@ class ExperimentSpec:
                 "benchmark_symbol": self.benchmark_symbol,
             },
             sort_keys=True,
+            default=str,
         )
 
 
@@ -203,18 +204,27 @@ async def _run_one(
         options_enabled=False,
     )
     result = await run_backtest_async(config, pipeline=built.agent, event_bus=ctx.bus)
+    decision_summary = built.summarize()
+    row_config: dict[str, Any] = {
+        **pipeline_spec.config,
+        "cadence": spec.cadence if built.kind == "agent" else "daily",
+    }
+    if built.kind == "rule" and spec.strategy_params:
+        row_config["strategy_params"] = {k: str(v) if isinstance(v, Path) else v for k, v in spec.strategy_params.items()}
+    for key in ("policy", "stub"):
+        if key in decision_summary:
+            row_config[key] = decision_summary[key]
     row = build_result_row(
         experiment=spec.experiment_id,
         pipeline=pipeline_spec.name,
-        config={**pipeline_spec.config, "cadence": spec.cadence if built.kind == "agent" else "daily",
-                **({"strategy_params": dict(spec.strategy_params)} if built.kind == "rule" and spec.strategy_params else {})},
+        config=row_config,
         symbol=symbol,
         start=spec.start.isoformat(),
         end=spec.end.isoformat(),
         bt_id=bt_id,
         result=result,
         bars=len(frame),
-        decision_summary=built.summarize(),
+        decision_summary=decision_summary,
         costs=decision_costs(ctx.conn, bt_id),
         notes=built.notes(),
     )
