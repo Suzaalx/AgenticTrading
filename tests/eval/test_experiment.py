@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -92,7 +93,13 @@ async def test_experiment_runs_all_pipelines_on_identical_bars_and_writes_table(
     # Debate off uses fewer LLM calls per decision than debate on (no bull/bear/judge).
     on_calls = sum(1 for c in llm.calls if c.agent in {"bull_researcher", "bear_researcher", "research_manager"})
     assert on_calls > 0
-    assert by_name["sentinel_debate_off"].config == '{"cadence":"weekly","debate_enabled":false}'
+    off_config = json.loads(by_name["sentinel_debate_off"].config)
+    assert off_config["debate_enabled"] is False and off_config["cadence"] == "weekly"
+    assert set(off_config["llm"]) == {
+        "provider", "quick_model", "deep_model", "role_models", "analyst_history_bars", "max_debate_rounds",
+        "max_position_pct_equity",
+    }
+    assert off_config["llm"]["max_position_pct_equity"] == 10.0
     # Cost metering is derived from the experiment DB, keyed per bt_id.
     conn = connect(spec.db_path())
     run_migrations(conn)
@@ -146,3 +153,20 @@ def test_unknown_pipeline_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown pipeline"):
         get_pipeline("nope")
+
+
+@pytest.mark.asyncio
+async def test_max_position_pct_override_changes_sentinel_exposure(tmp_path: Path) -> None:
+    bars = synthetic_bars()
+    base = _spec(tmp_path, ["sentinel_debate_off"])
+    full = ExperimentSpec(**{**base.__dict__, "experiment_id": "full", "max_position_pct_equity": 100.0, "out_dir": tmp_path / "full"})
+    kwargs = dict(settings=settings(), mandate=mandate(), router=FixtureRouter(), bars={"NVDA": bars})
+
+    capped = (await run_experiment_async(base, llm=_llm_without_debate_roles(), **kwargs))[0]
+    uncapped = (await run_experiment_async(full, llm=_llm_without_debate_roles(), **kwargs))[0]
+
+    assert json.loads(capped.config)["llm"]["max_position_pct_equity"] == 10.0
+    assert json.loads(uncapped.config)["llm"]["max_position_pct_equity"] == 100.0
+    # Same decisions, bigger fills: fixture BUYs 50% of the allowance each week.
+    assert uncapped.signals == capped.signals
+    assert abs(uncapped.total_return) > abs(capped.total_return)
