@@ -364,6 +364,7 @@ slippage/commission) and emits one tidy metrics row per `pipeline x symbol`:
 | `sentinel_debate_off` | same pipeline with the research debate bypassed (deterministic analyst roll-up) |
 | `sma_cross` | rule baseline, SMA crossover (`--short-window/--long-window`) |
 | `buy_hold` | rule baseline, buy first bar and hold |
+| `finrl` | FinRL deep-RL policy behind the same interface (`sentinel/eval/finrl_adapter.py`); runs as a flagged HOLD-only stub until a trained policy is supplied via `--finrl-policy path.json` / `FINRL_POLICY_PATH` |
 
 ```bash
 # Run: -p is repeatable; --csv SYMBOL=path.csv keeps it fully offline (default: data router)
@@ -386,6 +387,13 @@ replaces its rows, so costs are never double-counted. Agent pipelines decide on 
 (default weekly); rule baselines decide every bar. Agent decisions stop after the Portfolio
 Manager — sizing follows the mandate (`max_position_pct_equity x quantity_pct x PM scale`)
 and the engine simulates the fill, so no paper-broker state leaks between pipelines.
+
+**FinRL seam.** `sentinel/eval/finrl_adapter.py` defines the contract a trained agent has to
+meet: `build_observation()` (the shared feature vector), `FinRLPolicy.act(observation) -> HOLD|BUY|SELL`,
+`load_policy()` (JSON threshold export, any callable such as an SB3 `predict` wrapper, or the stub),
+and `train_policy()` (the training hook, intentionally `NotImplementedError` this cycle with the
+recipe in its docstring). `FinRLStrategy` drives the policy through the engine one bar at a time,
+so a FinRL row lands in the same table with the same metrics as everything else.
 
 ---
 
