@@ -37,7 +37,7 @@ def test_free_tier_models_record_tokens_and_latency_at_zero_cost(tmp_path) -> No
         conn,
         run_id="run_free",
         agent="trader",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         tokens_in=2_000,
         tokens_out=300,
         latency_ms=842,

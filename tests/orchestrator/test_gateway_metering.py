@@ -18,7 +18,7 @@ async def test_full_run_through_real_gateway_meters_tokens_and_latency_per_call(
 
     base = settings()
     open_weight = base.model_copy(
-        update={"llm": LLMSettings(provider="groq", quick_model="llama-3.1-8b-instant", max_retries=0)}
+        update={"llm": LLMSettings(provider="groq", quick_model="openai/gpt-oss-20b", max_retries=0)}
     )
     gateway = LLMGateway(settings=open_weight, provider=fake_llm())
     active = OrchestratorRunner(

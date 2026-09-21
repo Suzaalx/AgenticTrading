@@ -53,12 +53,12 @@ async def test_json_schema_mode_is_used_when_backend_accepts_it() -> None:
     provider = OpenAICompatibleProvider(client, name="groq")
 
     result = await provider.complete_structured(
-        "market_analyst", "prompt", SamplePayload, model="llama-3.1-8b-instant", max_tokens=512
+        "market_analyst", "prompt", SamplePayload, model="openai/gpt-oss-20b", max_tokens=512
     )
 
     assert result.structured == {"content": "ok", "confidence": 70}
     assert result.input_tokens == 120 and result.output_tokens == 30
-    assert result.model == "llama-3.1-8b-instant"
+    assert result.model == "openai/gpt-oss-20b"
     assert provider.structured_mode == "json_schema"
     request = client.requests[0]
     assert request["response_format"]["type"] == "json_schema"

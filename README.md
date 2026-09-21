@@ -255,18 +255,22 @@ Sentinel uses Claude (Anthropic API) for its agents. Every pipeline run costs to
 ```toml
 [llm]
 provider = "groq"                     # groq | gemini | ollama | anthropic | openai | openai_compatible
-deep_model = "llama-3.3-70b-versatile"
-quick_model = "llama-3.1-8b-instant"
+deep_model = "openai/gpt-oss-120b"
+quick_model = "openai/gpt-oss-20b"
 monthly_budget_usd = 15.0             # only bites on paid providers; free tiers meter $0
 ```
 
 Open-weight backends (the default) cost $0 — the cost tracker still records token counts and
-per-call latency in the `costs` table so decisions stay comparable. Switch providers by editing
+per-call latency in the `costs` table so decisions stay comparable. Free hosted tiers meter
+*prompt + reserved `max_tokens`* against a per-minute budget (Groq on-demand: 8k TPM), which is
+why the shipped `config.toml` sets `[pipeline] analyst_history_bars = 25` (SPEC default 90 ≈ 16k
+tokens) and `[llm] max_tokens = 2048`. A full standard-depth run is ~13 calls / ~40k tokens, so
+expect a couple of minutes of rate-limit waits per run on a free tier; raise both on a paid tier. Switch providers by editing
 `[llm].provider` and putting the matching key in `.env`:
 
 | provider | key in `.env` | example models |
 |---|---|---|
-| `groq` (default) | `GROQ_API_KEY` | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `qwen/qwen3-32b` |
+| `groq` (default) | `GROQ_API_KEY` | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (see `GET /models`; the catalog changes) |
 | `gemini` | `GEMINI_API_KEY` | `gemma-3-27b-it` (open-weight), `gemini-2.5-flash` |
 | `ollama` | none (`OLLAMA_BASE_URL` optional) | `llama3.1`, `qwen3`, `phi4`, `gemma3` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` (~$0.30/run at standard depth) |

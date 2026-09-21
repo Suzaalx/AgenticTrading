@@ -22,8 +22,8 @@ class LLMProviderSettings(BaseSettings):
 
 class LLMSettings(BaseSettings):
     provider: str = "groq"
-    deep_model: str = "llama-3.3-70b-versatile"
-    quick_model: str = "llama-3.1-8b-instant"
+    deep_model: str = "openai/gpt-oss-120b"
+    quick_model: str = "openai/gpt-oss-20b"
     role_models: dict[str, str] = Field(default_factory=dict)
     temperature: float = 0.0
     max_tokens: int = 4096
@@ -33,6 +33,10 @@ class LLMSettings(BaseSettings):
 
 
 class PipelineSettings(BaseSettings):
+    # Bars of OHLCV + indicators rendered into the market-analyst prompt (SPEC default 90).
+    # Free hosted tiers meter prompt + reserved max_tokens against a per-minute budget, so
+    # the shipped config.toml lowers this; paid providers can restore 90.
+    analyst_history_bars: int = 90
     max_debate_rounds: int = 2
     max_risk_discuss_rounds: int = 1
     always_run_risk_debate: bool = False
