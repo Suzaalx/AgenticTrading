@@ -30,7 +30,7 @@ Every decision, debate, report, fill, and lesson is stored in a local SQLite dat
 |-------------|-------|
 | Python 3.12+ | Check: `python3 --version` |
 | `uv` package manager | Install below |
-| Anthropic API key | console.anthropic.com — pay per token (~$0.30/run) |
+| LLM backend key | **Groq** (console.groq.com, free tier, default) or Gemini (aistudio.google.com, free tier) or a local Ollama server. Anthropic/OpenAI remain optional paid backends. |
 | Alpha Vantage key | alphavantage.co — free tier |
 | Finnhub key | finnhub.io — free tier |
 | Robinhood account | For live trading only — paper mode needs none |
@@ -72,7 +72,10 @@ cp .env.example .env
 Open `.env` and fill in your API keys:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...        # console.anthropic.com → API Keys
+GROQ_API_KEY=gsk_...                # console.groq.com → API Keys (free; default provider)
+GEMINI_API_KEY=                     # optional alternative free backend (provider = "gemini")
+OLLAMA_BASE_URL=http://localhost:11434/v1   # optional local dev backend (provider = "ollama")
+ANTHROPIC_API_KEY=                  # optional, only if config.toml sets provider = "anthropic"
 ALPHA_VANTAGE_KEY=...               # alphavantage.co/support/#api-key (free)
 FINNHUB_KEY=...                     # finnhub.io/register (free)
 RH_AGENTIC_MCP_URL=https://agent.robinhood.com/mcp/trading
@@ -251,13 +254,28 @@ Sentinel uses Claude (Anthropic API) for its agents. Every pipeline run costs to
 
 ```toml
 [llm]
-monthly_budget_usd = 15.0
-deep_model = "claude-opus-4-7"
-quick_model = "claude-sonnet-4-6"
-watchlist = ["SPY"]                   # 2 symbols ≈ $13/month
+provider = "groq"                     # groq | gemini | ollama | anthropic | openai | openai_compatible
+deep_model = "openai/gpt-oss-120b"
+quick_model = "openai/gpt-oss-20b"
+monthly_budget_usd = 15.0             # only bites on paid providers; free tiers meter $0
 ```
 
-Approximate costs per run:
+Open-weight backends (the default) cost $0 — the cost tracker still records token counts and
+per-call latency in the `costs` table so decisions stay comparable. Free hosted tiers meter
+*prompt + reserved `max_tokens`* against a per-minute budget (Groq on-demand: 8k TPM), which is
+why the shipped `config.toml` sets `[pipeline] analyst_history_bars = 25` (SPEC default 90 ≈ 16k
+tokens) and `[llm] max_tokens = 2048`. A full standard-depth run is ~13 calls / ~40k tokens, so
+expect a couple of minutes of rate-limit waits per run on a free tier; raise both on a paid tier. Switch providers by editing
+`[llm].provider` and putting the matching key in `.env`:
+
+| provider | key in `.env` | example models |
+|---|---|---|
+| `groq` (default) | `GROQ_API_KEY` | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (see `GET /models`; the catalog changes) |
+| `gemini` | `GEMINI_API_KEY` | `gemma-3-27b-it` (open-weight), `gemini-2.5-flash` |
+| `ollama` | none (`OLLAMA_BASE_URL` optional) | `llama3.1`, `qwen3`, `phi4`, `gemma3` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` (~$0.30/run at standard depth) |
+
+Approximate costs per run on Anthropic (for reference):
 - 1 symbol, standard depth → ~$0.30
 - 2 symbols/day, 22 trading days → ~$13/month
 
@@ -361,8 +379,8 @@ mandate.toml         # risk limits, universe, live stage flags
 
 ## Troubleshooting
 
-**`ANTHROPIC_API_KEY is required`**
-→ Add your key to `.env` and re-run.
+**`GROQ_API_KEY is required to start LLM-backed runs`** (or `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`)
+→ Add the key matching `config.toml [llm].provider` to `.env` and re-run. `sentinel doctor` shows which keys are present.
 
 **`uv not found`**
 → Run `export PATH="$HOME/.local/bin:$PATH"` or restart your terminal after installing uv.

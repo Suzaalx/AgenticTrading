@@ -1,13 +1,32 @@
 [llm]
-provider = "anthropic"
-deep_model = "claude-opus-4-7"
-quick_model = "claude-sonnet-4-6"
-role_models = { trader = "claude-opus-4-7", portfolio_manager = "claude-opus-4-7", research_manager = "claude-opus-4-7" }
+# provider: groq | gemini | ollama | anthropic | openai | openai_compatible
+# Free / open-weight backends are the default; Anthropic stays selectable but is opt-in.
+# Keys come from .env only (GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, ...).
+provider = "groq"
+deep_model = "openai/gpt-oss-120b"
+quick_model = "openai/gpt-oss-20b"
+role_models = { trader = "openai/gpt-oss-120b", portfolio_manager = "openai/gpt-oss-120b", research_manager = "openai/gpt-oss-120b" }
 temperature = 0.0
+max_tokens = 2048   # structured JSON replies are small; free tiers reserve this against the TPM budget
 max_retries = 3
 monthly_budget_usd = 15.0
 
+# Per-provider overrides (all optional). Built-in defaults:
+#   groq   -> https://api.groq.com/openai/v1                       key: GROQ_API_KEY
+#   gemini -> https://generativelanguage.googleapis.com/v1beta/openai/  key: GEMINI_API_KEY
+#   ollama -> http://localhost:11434/v1 (or OLLAMA_BASE_URL)         key: none needed
+# Example open-weight model names per provider (check `GET /models` — hosted catalogs change):
+#   groq:   openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b
+#   gemini: gemma-3-27b-it (open-weight), gemini-2.5-flash (free tier, not open-weight)
+#   ollama: llama3.1, qwen3, phi4, gemma3
+[llm.providers.ollama]
+base_url = "http://localhost:11434/v1"
+
 [pipeline]
+# Bars rendered into the market-analyst prompt. The SPEC default is 90 (~16k prompt tokens),
+# which exceeds the per-minute token budget of free hosted tiers (Groq on-demand: 8k TPM).
+# Raise it on a paid provider.
+analyst_history_bars = 25
 max_debate_rounds = 2
 max_risk_discuss_rounds = 1
 always_run_risk_debate = false

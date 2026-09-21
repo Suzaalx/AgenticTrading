@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
+import time
 from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -14,6 +16,14 @@ from sentinel.llm.contracts import LLMResult
 
 T = TypeVar("T")
 Tier = Literal["quick", "deep"]
+
+# Free / open-weight backends served through the OpenAI-compatible adapter.
+OPEN_WEIGHT_PROVIDERS: frozenset[str] = frozenset({"groq", "gemini", "ollama"})
+SUPPORTED_PROVIDERS: frozenset[str] = OPEN_WEIGHT_PROVIDERS | {
+    "anthropic",
+    "openai",
+    "openai_compatible",
+}
 
 
 class SchemaParseError(RuntimeError):
@@ -65,6 +75,7 @@ class LLMGateway:
         selected_temperature = (
             self.settings.llm.temperature if temperature is None else temperature
         )
+        kwargs.setdefault("max_tokens", int(self.settings.llm.max_tokens))
         try:
             provider_result = await self._call_provider_with_retries(
                 agent=agent,
@@ -100,11 +111,15 @@ class LLMGateway:
                 ) from second_error
 
     async def _call_provider_with_retries(self, **kwargs: Any) -> LLMResult[Any]:
+        """Call the provider with transport retries and stamp wall-clock latency on the result."""
+
         max_retries = max(0, int(self.settings.llm.max_retries))
         attempt = 0
+        started = time.perf_counter()
         while True:
             try:
-                return await self.provider.complete_structured(**kwargs)
+                result = await self.provider.complete_structured(**kwargs)
+                break
             except (ValidationError, ValueError, TypeError):
                 raise
             except Exception:
@@ -112,6 +127,10 @@ class LLMGateway:
                 if attempt > max_retries:
                     raise
                 await asyncio.sleep(min(0.25 * attempt, 1.0))
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        if result.latency_ms:
+            return result
+        return dataclasses.replace(result, latency_ms=latency_ms)
 
     def _validated_result(
         self,
@@ -121,13 +140,7 @@ class LLMGateway:
         if schema is None:
             return result
         structured = self._coerce(schema, result.structured, result.content)
-        return LLMResult(
-            content=result.content,
-            structured=structured,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            model=result.model,
-        )
+        return dataclasses.replace(result, structured=structured)
 
     @staticmethod
     def _coerce(schema: type[T], payload: Any, content: str) -> T:
@@ -149,8 +162,7 @@ class LLMGateway:
     def _raw_response(result: LLMResult[Any]) -> Any:
         return result.structured if result.structured is not None else result.content
 
-    @staticmethod
-    def _build_provider(provider_name: str, *, base_url: str | None = None) -> Any:
+    def _build_provider(self, provider_name: str, *, base_url: str | None = None) -> Any:
         if provider_name == "anthropic":
             from sentinel.llm.providers.anthropic import AnthropicProvider
 
@@ -162,7 +174,19 @@ class LLMGateway:
             if provider_name == "openai_compatible" and resolved_base_url is None:
                 resolved_base_url = os.environ.get("OPENAI_BASE_URL")
             return OpenAIProvider(base_url=resolved_base_url)
-        msg = f"Unsupported LLM provider {provider_name!r}"
+        if provider_name in OPEN_WEIGHT_PROVIDERS:
+            from sentinel.llm.providers.openai_compat import OpenAICompatibleProvider
+
+            overrides = self.settings.llm.providers.get(provider_name)
+            return OpenAICompatibleProvider.for_name(
+                provider_name,
+                base_url=base_url or (overrides.base_url if overrides else None),
+                api_key_env=overrides.api_key_env if overrides else None,
+            )
+        msg = (
+            f"Unsupported LLM provider {provider_name!r}; expected one of "
+            f"{sorted(SUPPORTED_PROVIDERS)}"
+        )
         raise ValueError(msg)
 
 

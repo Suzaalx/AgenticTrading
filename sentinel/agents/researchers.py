@@ -118,6 +118,7 @@ class ResearchDebater:
             tokens_in=result.input_tokens,
             tokens_out=result.output_tokens,
             cost=incurred,
+            latency_ms=result.latency_ms,
         )
         await self.bus.publish(
             CostIncurred(

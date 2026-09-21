@@ -41,8 +41,13 @@ def record_cost(
     tokens_in: int,
     tokens_out: int,
     cost: Decimal | None = None,
+    latency_ms: int = 0,
 ) -> Decimal:
-    """Persist a single LLM cost row and return the cost written."""
+    """Persist a single LLM cost row and return the cost written.
+
+    Free-tier / open-weight backends bill $0, so token counts and ``latency_ms`` are
+    recorded regardless of dollar cost to keep per-decision metering meaningful.
+    """
 
     incurred = cost if cost is not None else cost_usd(model, tokens_in, tokens_out)
     insert_cost(
@@ -55,6 +60,7 @@ def record_cost(
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cost_usd=incurred,
+            latency_ms=latency_ms,
         ),
     )
     return incurred
