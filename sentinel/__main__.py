@@ -540,6 +540,9 @@ def portfolio(
 @app.command()
 def history(
     symbol: Annotated[str | None, typer.Option("--symbol", help="Filter by symbol")] = None,
+    debate: Annotated[
+        str | None, typer.Option("--debate", help="Filter by debate switch: on|off")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON")] = False,
 ) -> None:
     """Print recent decision history."""
@@ -549,25 +552,34 @@ def history(
     conn = connect(default_db_path())
     try:
         run_migrations(conn)
+        clauses: list[str] = []
+        params: list[object] = []
         if symbol:
-            rows = conn.execute(
-                "SELECT * FROM runs WHERE symbol = ? ORDER BY COALESCE(finished_at, created_at, as_of) DESC LIMIT 50",
-                (symbol.upper(),),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM runs ORDER BY COALESCE(finished_at, created_at, as_of) DESC LIMIT 50"
-            ).fetchall()
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        if debate is not None:
+            if debate.lower() not in {"on", "off"}:
+                console.print("[red]--debate must be 'on' or 'off'[/red]")
+                raise typer.Exit(1)
+            clauses.append("debate_enabled = ?")
+            params.append(1 if debate.lower() == "on" else 0)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"SELECT * FROM runs {where} ORDER BY COALESCE(finished_at, created_at, as_of) DESC LIMIT 50",
+            params,
+        ).fetchall()
         records = [dict(row) for row in rows]
         if json_output:
             console.print(json.dumps(records, indent=2, default=str))
             return
         console.print("[bold]Decision history[/bold]")
         for row in records:
+            debate_flag = row.get("debate_enabled")
+            debate = "—" if debate_flag is None else ("debate=on" if debate_flag else "debate=off")
             console.print(
                 f"{str(row.get('as_of') or '')[:10]} {row.get('run_id')} "
                 f"{row.get('symbol') or '—'} {row.get('action') or '—'} "
-                f"{row.get('verdict') or row.get('status') or '—'}"
+                f"{row.get('verdict') or row.get('status') or '—'} {debate}"
             )
         if not records:
             console.print("no runs")

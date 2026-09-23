@@ -33,6 +33,9 @@ class LLMSettings(BaseSettings):
 
 
 class PipelineSettings(BaseSettings):
+    # Ablation switch: false skips the bull/bear debate + research manager and routes analyst
+    # outputs straight to the trader via a deterministic roll-up (no extra LLM call).
+    debate_enabled: bool = True
     # Bars of OHLCV + indicators rendered into the market-analyst prompt (SPEC default 90).
     # Free hosted tiers meter prompt + reserved max_tokens against a per-minute budget, so
     # the shipped config.toml lowers this; paid providers can restore 90.

@@ -5,7 +5,8 @@ from __future__ import annotations
 DDL_STATEMENTS: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS runs      (run_id TEXT PRIMARY KEY, symbol TEXT, as_of TEXT, mode TEXT,
                         status TEXT, action TEXT, verdict TEXT, cost_usd REAL,
-                        tokens INTEGER, created_at TEXT, finished_at TEXT)""",
+                        tokens INTEGER, created_at TEXT, finished_at TEXT,
+                        debate_enabled INTEGER)""",
     """CREATE TABLE IF NOT EXISTS reports   (run_id TEXT, agent TEXT, model TEXT, content TEXT,
                         structured_json TEXT, tokens_in INT, tokens_out INT,
                         cost_usd REAL, latency_ms INT, created_at TEXT)""",
@@ -62,4 +63,5 @@ EXPECTED_TABLES: tuple[str, ...] = (
 # existing ~/.sentinel databases pick them up without a manual migration step.
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("costs", "latency_ms", "INT"),
+    ("runs", "debate_enabled", "INTEGER"),
 )
