@@ -63,6 +63,9 @@ class ExperimentSpec:
     max_position_pct_equity: float | None = None
     out_dir: Path | None = None
     bootstrap_iterations: int = 0  # bootstrap CIs are slow and not part of the comparison table
+    # Keep completed agent decisions from a previous run of this experiment id and only
+    # re-query the LLM for missing/failed ones (free-tier daily token caps split runs across days).
+    resume: bool = False
 
     def resolved_out_dir(self) -> Path:
         return self.out_dir or (sentinel_home() / "experiments" / self.experiment_id)
@@ -108,6 +111,8 @@ class ExperimentContext:
     router: Any | None
     starting_cash: float
     strategy_params: Mapping[str, Any]
+    # symbol -> {run_id -> completed RunState}; filled per pipeline when spec.resume is set.
+    resume_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def bt_id_for(spec: ExperimentSpec, pipeline: str, symbol: str) -> str:
@@ -189,7 +194,15 @@ async def _run_one(
 ) -> ResultRow:
     spec = ctx.spec
     bt_id = bt_id_for(spec, pipeline_spec.name, symbol)
-    _clear_previous_run(ctx.conn, bt_id)
+    ctx.resume_cache = {}
+    if spec.resume and pipeline_spec.kind == "agent":
+        from sentinel.eval.sentinel_adapter import load_completed_decisions
+
+        completed = load_completed_decisions(ctx.conn, bt_id)
+        _clear_incomplete_decisions(ctx.conn, bt_id, keep=set(completed))
+        ctx.resume_cache = {symbol: completed}
+    else:
+        _clear_previous_run(ctx.conn, bt_id)
     built: BuiltPipeline = pipeline_spec.build(ctx, symbol)
     benchmark = spec.benchmark_symbol or symbol
     config = BacktestConfig(
@@ -219,7 +232,7 @@ async def _run_one(
     }
     if built.kind == "rule" and spec.strategy_params:
         row_config["strategy_params"] = {k: str(v) if isinstance(v, Path) else v for k, v in spec.strategy_params.items()}
-    for key in ("policy", "stub", "llm"):
+    for key in ("policy", "stub", "llm", "reused_decisions"):
         if key in decision_summary:
             row_config[key] = decision_summary[key]
     row = build_result_row(
@@ -274,6 +287,26 @@ def _clear_previous_run(conn: sqlite3.Connection, bt_id: str) -> None:
     like = f"{bt_id}:%"
     for table in ("costs", "reports", "runs"):
         conn.execute(f"DELETE FROM {table} WHERE run_id = ? OR run_id LIKE ?", (bt_id, like))
+    conn.execute("DELETE FROM eval_results WHERE bt_id = ?", (bt_id,))
+    conn.commit()
+
+
+def _clear_incomplete_decisions(conn: sqlite3.Connection, bt_id: str, *, keep: set[str]) -> None:
+    """Drop rows of failed/partial decisions (so their tokens aren't double-counted) but keep completed ones."""
+
+    run_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT run_id FROM costs WHERE run_id LIKE ? "
+            "UNION SELECT DISTINCT run_id FROM reports WHERE run_id LIKE ?",
+            (f"{bt_id}:%", f"{bt_id}:%"),
+        )
+    ]
+    for run_id in run_ids:
+        if run_id in keep:
+            continue
+        for table in ("costs", "reports", "runs"):
+            conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
     conn.execute("DELETE FROM eval_results WHERE bt_id = ?", (bt_id,))
     conn.commit()
 

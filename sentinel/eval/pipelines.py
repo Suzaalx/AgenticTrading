@@ -96,9 +96,14 @@ def _build_sentinel(*, debate_enabled: bool) -> Callable[[ExperimentContext, str
             llm=ctx.llm,
             router=ctx.router,
         )
-        adapter = SentinelPipelineAdapter(runner=runner, mandate=ctx.mandate, equity_hint=ctx.starting_cash)
+        adapter = SentinelPipelineAdapter(
+            runner=runner,
+            mandate=ctx.mandate,
+            equity_hint=ctx.starting_cash,
+            cached=dict(ctx.resume_cache.get(symbol, {})),
+        )
         def summarize() -> dict[str, Any]:
-            return {**summarize_traces(adapter.traces), "llm": llm_config}
+            return {**summarize_traces(adapter.traces), "llm": llm_config, "reused_decisions": adapter.reused}
 
         return BuiltPipeline(
             kind="agent",
