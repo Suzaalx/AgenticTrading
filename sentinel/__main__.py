@@ -554,6 +554,10 @@ def eval_run(
         float | None,
         typer.Option("--max-position-pct", help="Override mandate max_position_pct_equity for agent pipelines (e.g. 100)"),
     ] = None,
+    resume: Annotated[
+        bool,
+        typer.Option("--resume", help="Reuse completed agent decisions already stored for this experiment id"),
+    ] = False,
     out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Where experiment.db + results.csv go")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print rows as JSON instead of a table")] = False,
 ) -> None:
@@ -588,6 +592,7 @@ def eval_run(
         },
         csv_paths=csv_paths,
         max_position_pct_equity=max_position_pct,
+        resume=resume,
         out_dir=out_dir,
     )
     settings = load_settings(Path.cwd())

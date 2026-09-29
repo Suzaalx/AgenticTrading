@@ -144,7 +144,7 @@ async def test_results_are_reproducible_from_stored_runs_and_reruns_replace(tmp_
     metered = conn.execute(
         "SELECT COUNT(*) FROM costs WHERE run_id LIKE ?", (f"{off.bt_id}:%",)
     ).fetchone()[0]
-    assert metered == off.decisions * 8  # 4 analysts + trader + 3 risk debaters... per decision
+    assert metered == off.decisions * 8  # 3 analysts + trader + 3 risk + PM per decision
     conn.close()
 
 
@@ -170,3 +170,54 @@ async def test_max_position_pct_override_changes_sentinel_exposure(tmp_path: Pat
     # Same decisions, bigger fills: fixture BUYs 50% of the allowance each week.
     assert uncapped.signals == capped.signals
     assert abs(uncapped.total_return) > abs(capped.total_return)
+
+
+class _QuotaExhausted(Exception):
+    status_code = 500  # not a 429, so the gateway does not wait it out in the test
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_completed_decisions_and_only_redoes_failed_ones(tmp_path: Path) -> None:
+    bars = synthetic_bars()
+    spec = _spec(tmp_path, ["sentinel_debate_off"])
+    kwargs = dict(settings=settings(), mandate=mandate(), router=FixtureRouter(), bars={"NVDA": bars})
+
+    # First run: the trader "hits the daily token cap" on every other decision.
+    flaky = _llm_without_debate_roles()
+    good_trader = flaky.responses["trader"]
+    calls = {"n": 0}
+
+    def trader(agent, prompt, schema, kw):
+        calls["n"] += 1
+        if calls["n"] % 2 == 0:
+            raise _QuotaExhausted("tokens per day exhausted")
+        return good_trader
+
+    flaky.responses["trader"] = trader
+    first = (await run_experiment_async(spec, llm=flaky, **kwargs))[0]
+    assert 0 < first.failed_decisions < first.decisions
+
+    # Resume with a healthy model: only the failed decisions are re-queried.
+    healthy = _llm_without_debate_roles()
+    resumed_spec = ExperimentSpec(**{**spec.__dict__, "resume": True})
+    resumed = (await run_experiment_async(resumed_spec, llm=healthy, **kwargs))[0]
+
+    trader_calls = sum(1 for c in healthy.calls if c.agent == "trader")
+    assert trader_calls == first.failed_decisions
+    assert resumed.failed_decisions == 0 and resumed.decisions == first.decisions
+    assert json.loads(resumed.config)["reused_decisions"] == first.decisions - first.failed_decisions
+
+    # Same result as a clean single run, and costs are neither lost nor double-counted.
+    clean_spec = ExperimentSpec(**{**spec.__dict__, "experiment_id": "clean", "out_dir": tmp_path / "clean"})
+    clean = (await run_experiment_async(clean_spec, llm=_llm_without_debate_roles(), **kwargs))[0]
+    assert resumed.total_return == pytest.approx(clean.total_return)
+    assert resumed.signals == clean.signals
+    conn = connect(spec.db_path())
+    run_migrations(conn)
+    per_decision = conn.execute(
+        "SELECT run_id, COUNT(*) FROM costs WHERE run_id LIKE ? GROUP BY run_id", (f"{resumed.bt_id}:%",)
+    ).fetchall()
+    assert len(per_decision) == resumed.decisions
+    # 3 metered analysts (sentiment skips the LLM: replay snapshots carry no news) + trader + 3 risk + PM
+    assert all(row[1] == 8 for row in per_decision)
+    conn.close()
