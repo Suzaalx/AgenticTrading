@@ -77,10 +77,12 @@ class OpenAICompatibleProvider:
         api_key_env: str = "OPENAI_API_KEY",
         dummy_api_key: str | None = None,
         structured_mode: StructuredMode | None = None,
+        timeout_seconds: float = 120.0,
     ) -> None:
         self.name = name
         self.base_url = base_url
         self.api_key_env = api_key_env
+        self.timeout_seconds = timeout_seconds
         self._structured_mode: StructuredMode | None = structured_mode
         if client is None:
             api_key = os.environ.get(api_key_env) or dummy_api_key
@@ -89,7 +91,11 @@ class OpenAICompatibleProvider:
                 return
             from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+            # The gateway owns retries (transport + 429/Retry-After); keep the SDK's own
+            # retry loop off so a hung response costs one timeout, not three.
+            client = AsyncOpenAI(
+                base_url=base_url, api_key=api_key, timeout=timeout_seconds, max_retries=0
+            )
         self.client = client
 
     @classmethod
@@ -100,6 +106,7 @@ class OpenAICompatibleProvider:
         base_url: str | None = None,
         api_key_env: str | None = None,
         client: Any | None = None,
+        timeout_seconds: float = 120.0,
     ) -> OpenAICompatibleProvider:
         """Build a provider from the built-in spec table, honouring config/env overrides."""
 
@@ -116,6 +123,7 @@ class OpenAICompatibleProvider:
             base_url=resolved_base_url or spec.base_url,
             api_key_env=api_key_env or spec.api_key_env,
             dummy_api_key=spec.dummy_api_key,
+            timeout_seconds=timeout_seconds,
         )
 
     @property

@@ -28,6 +28,9 @@ class LLMSettings(BaseSettings):
     temperature: float = 0.0
     max_tokens: int = 4096
     max_retries: int = 3
+    # Per-request HTTP timeout for hosted backends. The SDK default (600s + 2 SDK retries)
+    # lets one hung response stall a decision for up to ~2h once gateway retries stack on top.
+    request_timeout_seconds: float = 120.0
     monthly_budget_usd: float = 25.0
     providers: dict[str, LLMProviderSettings] = Field(default_factory=dict)
 

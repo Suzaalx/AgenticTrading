@@ -165,3 +165,13 @@ def test_json_helpers() -> None:
     assert _maybe_json('```json\n{"a": 1}\n```') == {"a": 1}
     assert _maybe_json('noise before {"a": 2} noise after') == {"a": 2}
     assert _maybe_json("not json at all") is None
+
+
+def test_real_client_is_built_with_timeout_and_no_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    provider = OpenAICompatibleProvider.for_name("groq", timeout_seconds=45.0)
+
+    assert provider.client is not None
+    assert provider.client.max_retries == 0  # the gateway owns retries + Retry-After handling
+    timeout = provider.client.timeout
+    assert float(getattr(timeout, "read", timeout)) == 45.0
