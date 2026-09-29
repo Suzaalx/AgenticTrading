@@ -194,6 +194,7 @@ class LLMGateway:
                 provider_name,
                 base_url=base_url or (overrides.base_url if overrides else None),
                 api_key_env=overrides.api_key_env if overrides else None,
+                timeout_seconds=float(self.settings.llm.request_timeout_seconds),
             )
         msg = (
             f"Unsupported LLM provider {provider_name!r}; expected one of "
