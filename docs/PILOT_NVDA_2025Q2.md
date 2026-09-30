@@ -12,7 +12,7 @@ window before scaling up. Compares `sentinel_debate_on`, `sentinel_debate_off`,
 | fill model | decision on bar *t* → fill at open of *t+1*, slippage 5 bps, commission $0, starting cash $10,000 |
 | agent cadence | weekly (every 5th bar → 13 Sentinel decisions per variant); rule baselines decide every bar |
 | sma_cross params | short 5 / long 20 (the 20/50 default never warms up inside a 63-bar window) |
-| LLM backend | Groq free tier (`provider = "groq"`) — see "Run configuration" below |
+| LLM backend | Groq free tier (`provider = "groq"`): `openai/gpt-oss-20b` quick, `openai/gpt-oss-120b` deep, `analyst_history_bars = 25`, `max_tokens = 2048`, `max_position_pct_equity = 10` |
 | experiment id | `pilot_nvda_2025q2` → `~/.sentinel/experiments/pilot_nvda_2025q2/{results.csv,experiment.db}` |
 
 ## Commands
@@ -23,8 +23,9 @@ uv run sentinel eval run -p sma_cross -p buy_hold -s NVDA --start 2025-03-03 --e
     --short-window 5 --long-window 20 --experiment pilot_nvda_2025q2
 
 # Sentinel rows (needs GROQ_API_KEY in .env). Same experiment id => rows are added to the same table.
+# --resume keeps completed decisions and only re-queries failed/missing ones (daily token cap).
 uv run sentinel eval run -p sentinel_debate_on -p sentinel_debate_off -s NVDA --start 2025-03-03 --end 2025-05-30 \
-    --history-bars 30 --experiment pilot_nvda_2025q2
+    --history-bars 25 --experiment pilot_nvda_2025q2 --resume
 
 # rebuild the combined table at any time
 uv run sentinel eval report --experiment pilot_nvda_2025q2
@@ -42,8 +43,21 @@ buy_hold   NVDA    2025-03-03..2025-05-30  22.06%    1.56  -22.49%    n/a       
 
 ### Sentinel debate-on / debate-off
 
-**Pending — blocked on a `GROQ_API_KEY`.** The rows will be appended here (and land in
-the same `results.csv`) as soon as the key is in `.env`.
+**Incomplete — not reportable yet.** Attempt 2 (2026-09-29, 18:30–21:20 UTC) ran into Groq's free-tier
+**daily** cap of 200k tokens per model:
+
+| variant | decisions completed | failures |
+|---|---|---|
+| `sentinel_debate_on` | 9 / 13 | 3 × HTTP 429 "tokens per day", 1 × `SchemaParseError` (trader omitted `quantity_pct`) |
+| `sentinel_debate_off` | 0 / 13 | 13 × HTTP 429 "tokens per day" (allowance already spent by debate-on) |
+
+Failed decisions become HOLD, so the stored rows (debate-on +1.16%, debate-off 0.00%) are biased toward
+inaction and must not be read as results. Cost side from the 9 completed debate-on decisions: ~25.5k
+tokens per decision (~17.4k on gpt-oss-20b, ~8.1k on gpt-oss-120b), $0, ~13 s mean model time per call.
+
+Remaining work: 4 debate-on + 13 debate-off decisions ≈ 190k tokens on gpt-oss-20b — at the edge of one
+day's allowance, so it may need two `--resume` passes. Run the command above once the rolling window has
+freed (≈ 21:30 UTC the next day).
 
 ### Harness validation dry-run (real NVDA bars, `FakeLLM` standing in for Groq)
 
@@ -76,7 +90,7 @@ rows without double-counting costs.
    which would have turned every 429 into a failed decision (HOLD). It now honours
    `Retry-After` (fallback exponential, ≤90s, 6 attempts) without consuming the transport
    retry budget.
-3. **Daily token budget for the 70B model.** 13 decisions × 4 deep-tier calls × ~3–4k tokens
+3. **Daily token budget.** _(Superseded by 10: the binding limit turned out to be 200k tokens/day per model on the gpt-oss defaults.)_ 13 decisions × 4 deep-tier calls × ~3–4k tokens
    ≈ 200k tokens/day > Groq's 100k TPD for `llama-3.3-70b-versatile`. Plan for the pilot:
    run everything on `llama-3.1-8b-instant` (`--model llama-3.1-8b-instant`) or split the
    two Sentinel variants across two days. `--model` is recorded in the row config so it is
@@ -110,7 +124,19 @@ rows without double-counting costs.
    including an undefined `_exchange_code` in `execution/rh_auth.py`. Left untouched
    (live-path code).
 
+10. **Daily token cap (200k tokens/day per model).** Debate-on alone used ~180k on gpt-oss-20b, so
+    both variants cannot run in one day. Switching models between variants would confound the ablation,
+    so instead `--resume` (commit f019151) rebuilds completed decisions from stored `reports` rows,
+    keeps their cost rows, drops failed/partial ones, and re-queries only those.
+11. **Hung request (attempt 1, 2026-09-21).** One Groq response never arrived; the OpenAI SDK's 600 s
+    timeout plus its own retries, under gateway retries, stalled the run ~1 h at decision 9. Fixed in
+    1b674d6 (`request_timeout_seconds = 120`, SDK retries off). Attempt 1 was discarded.
+12. **Malformed structured output.** One trader reply omitted `quantity_pct` twice (initial + validation
+    retry). Worth tracking as a per-model reliability metric in the full study.
+
 ## Run configuration used for the Sentinel rows
 
-_To be filled in when the rows are run: provider, model(s), `analyst_history_bars`,
-`max_position_pct_equity`, wall-clock, any 429 waits or failed decisions._
+Provider groq; quick `openai/gpt-oss-20b`, deep `openai/gpt-oss-120b` (trader, research manager, PM);
+`analyst_history_bars = 25`; `max_tokens = 2048`; `max_debate_rounds = 2`; `max_position_pct_equity = 10`;
+weekly cadence. Logs: `~/.sentinel/experiments/pilot_nvda_2025q2/sentinel_rows.log` (attempt 2) and
+`sentinel_rows.attempt1.log`. Final combined table to be added after the `--resume` pass.
