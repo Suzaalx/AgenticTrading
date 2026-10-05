@@ -226,9 +226,8 @@ async def test_trader_schema_repair_after_malformed_response(tmp_path) -> None:
         {
             "content": "Malformed equity proposal.",
             "action": "BUY",
-            "quantity_pct": 10.0,
             "time_horizon_days": 5,
-            "entry_rationale": "Missing order_type.",
+            "entry_rationale": "Missing quantity_pct.",
             "exit_plan": "Exit.",
         },
         {
