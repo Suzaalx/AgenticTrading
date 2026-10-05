@@ -14,6 +14,16 @@ TabbedContent {
     height: 1fr;
 }
 
+/* Newer Textual sizes ContentSwitcher/TabPane to their content (height: auto). Every screen
+   inside uses 1fr, so without this the panes collapse to zero height and render blank. */
+TabbedContent > ContentSwitcher {
+    height: 1fr;
+}
+
+TabPane {
+    height: 1fr;
+}
+
 .screen-body {
     height: 1fr;
     width: 1fr;
@@ -191,4 +201,13 @@ TabbedContent {
 
 #live-rh-options {
     height: 10;
+}
+
+/* History: give the run list a real column; the detail panel takes the rest. */
+#history-screen Vertical.panel {
+    width: 45%;
+}
+
+#history-detail {
+    width: 1fr;
 }
