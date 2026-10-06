@@ -23,6 +23,9 @@ monthly_budget_usd = 15.0
 base_url = "http://localhost:11434/v1"
 
 [pipeline]
+# debate_enabled = false skips the bull/bear research debate (ablation); analyst reports are
+# rolled up deterministically and handed straight to the trader. Recorded on each run row.
+debate_enabled = true
 # Bars rendered into the market-analyst prompt. The SPEC default is 90 (~16k prompt tokens),
 # which exceeds the per-minute token budget of free hosted tiers (Groq on-demand: 8k TPM).
 # Raise it on a paid provider.

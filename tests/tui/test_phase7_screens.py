@@ -18,7 +18,8 @@ def seed_phase7_store() -> None:
     with connect() as conn:
         run_migrations(conn)
         conn.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs (run_id, symbol, as_of, mode, status, action, verdict, cost_usd, tokens, "
+            "created_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             ("run-1", "NVDA", now, "decision", "completed", "BUY", "APPROVE", 0.25, 1000, now, now),
         )
         conn.execute(
