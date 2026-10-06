@@ -368,7 +368,7 @@ slippage/commission) and emits one tidy metrics row per `pipeline x symbol`:
 | `sentinel_debate_off` | same pipeline with the research debate bypassed (deterministic analyst roll-up) |
 | `sma_cross` | rule baseline, SMA crossover (`--short-window/--long-window`) |
 | `buy_hold` | rule baseline, buy first bar and hold |
-| `finrl` | FinRL deep-RL policy behind the same interface (`sentinel/eval/finrl_adapter.py`); runs as a flagged HOLD-only stub until a trained policy is supplied via `--finrl-policy path.json` / `FINRL_POLICY_PATH` |
+| `finrl` | FinRL-style PPO agent (Stable-Baselines3). Train with `uv sync --extra rl` then `uv run sentinel eval train-rl --symbol NVDA [--reward excess --also AAPL ...]`, evaluate with `--finrl-policy ~/.sentinel/models/<name>`; without a policy it runs as a flagged HOLD-only stub |
 
 ```bash
 # Run: -p is repeatable; --csv SYMBOL=path.csv keeps it fully offline (default: data router)

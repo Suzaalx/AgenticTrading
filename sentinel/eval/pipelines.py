@@ -147,6 +147,7 @@ def _build_finrl(ctx: ExperimentContext, symbol: str) -> BuiltPipeline:
     inner = FinRLStrategy(
         policy=load_policy(params.get("finrl_policy")),
         warmup_bars=int(params.get("finrl_warmup_bars", 50)),
+        prehistory=ctx.prehistory.get(symbol.upper()),
     )
     strategy = InstrumentedStrategy(inner)
 
@@ -192,9 +193,9 @@ PIPELINES: dict[str, PipelineSpec] = {
         name="finrl",
         kind="rule",
         description=(
-            "FinRL deep-RL policy behind the shared interface (sentinel/eval/finrl_adapter.py). "
-            "Runs as a HOLD-only stub flagged in `notes` until a trained policy is supplied via "
-            "FINRL_POLICY_PATH or strategy_params['finrl_policy']."
+            "FinRL-style deep-RL baseline (PPO, sentinel/eval/rl_env.py). Train with "
+            "`sentinel eval train-rl`, then pass --finrl-policy <dir or model.zip>; without a "
+            "policy it runs as a HOLD-only stub flagged in `notes`."
         ),
         config={"strategy": "finrl"},
         build=_build_finrl,

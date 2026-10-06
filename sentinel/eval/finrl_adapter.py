@@ -1,24 +1,18 @@
-"""FinRL integration seam for the evaluation harness.
+"""FinRL-style reinforcement-learning baseline behind the evaluation harness.
 
-FinRL (https://github.com/AI4Finance-Foundation/FinRL) trains deep-RL agents on a
-gym-style trading environment. Rather than importing FinRL into the harness directly
-(heavy torch/gymnasium dependency, not installed in this repo), we define a small,
-dependency-free interface that a FinRL-trained policy can be wrapped in, and a
-:class:`FinRLStrategy` that drives that policy through the *same* backtest engine, bars,
-fill model and metrics as every other pipeline.
+A trained policy is driven through the *same* backtest engine, bars, fill model and
+metrics as every other pipeline. Pieces:
 
-Interface
----------
-- :class:`Observation` — the feature vector the policy sees on each bar, built here from
-  the bar history so the definition is shared by training and evaluation.
-- :class:`FinRLPolicy` — ``act(observation) -> action`` where ``action`` is one of
-  ``HOLD/BUY/SELL`` ids. Anything exposing that method (an SB3 ``model.predict``
-  wrapper, a torch module, a lookup table) plugs in.
-- :func:`load_policy` — resolves a policy from ``FINRL_POLICY_PATH`` / a callable; when
-  nothing is available it returns :class:`StubPolicy` which always HOLDs and is flagged
-  in the results row, so the interface is exercised end-to-end without a trained model.
-- :func:`train_policy` — the training hook; raises ``NotImplementedError`` with the
-  recipe this cycle (see the docstring), keeping the contract explicit.
+- :class:`Observation` / :func:`build_observation` — the feature vector the policy sees on
+  each bar. Training uses the vectorised twin in :mod:`sentinel.eval.rl_env`, and a test
+  asserts the two agree row for row, so train and evaluation inputs cannot drift.
+- :class:`FinRLPolicy` — ``act(observation) -> HOLD/BUY/SELL``. Implementations: a trained
+  Stable-Baselines3 model (:class:`SB3Policy`, from ``sentinel eval train-rl``), a JSON
+  threshold table, any callable, or :class:`StubPolicy` (always HOLD, flagged in results).
+- :func:`train_policy` — trains the PPO baseline via :mod:`sentinel.eval.rl_train`
+  (optional ``rl`` extra: ``uv sync --extra rl``).
+- :class:`FinRLStrategy` — long-only, all-in strategy; ``prehistory`` supplies bars from
+  before the evaluation window so rolling features are defined from day one.
 """
 
 from __future__ import annotations
@@ -126,10 +120,14 @@ class TablePolicy:
         )
 
 
-def build_observation(context: BarContext) -> Observation:
-    """Compute the shared feature vector from the bar history available at ``context``."""
+def build_observation(context: BarContext, prehistory: pd.DataFrame | None = None) -> Observation:
+    """Compute the shared feature vector from the bar history available at ``context``.
 
-    close = cast(pd.Series, pd.to_numeric(context.history["close"], errors="coerce")).astype(float)
+    ``prehistory`` holds bars from *before* the evaluation window so features such as the
+    50-day SMA ratio are defined from the first evaluation bar, as they were in training.
+    """
+
+    close = cast(pd.Series, pd.to_numeric(_full_history(context, prehistory)["close"], errors="coerce")).astype(float)
     values = (
         _pct_change(close, 1),
         _pct_change(close, 5),
@@ -140,6 +138,34 @@ def build_observation(context: BarContext) -> Observation:
         (context.position_value / context.equity) if context.equity > 0 else 0.0,
     )
     return Observation(values=tuple(_finite(v) for v in values))
+
+
+@dataclass
+class SB3Policy:
+    """A trained Stable-Baselines3 model (``model.zip`` from ``sentinel eval train-rl``)."""
+
+    path: Path
+    name: str = "ppo"
+    _model: Any = field(default=None, repr=False)
+
+    def act(self, observation: Observation) -> int:
+        import numpy as np
+
+        if self._model is None:
+            from stable_baselines3 import PPO
+
+            self._model = PPO.load(str(self.path), device="cpu")
+        obs = np.clip(np.asarray(observation.values, dtype=np.float32), -10.0, 10.0)
+        action, _ = self._model.predict(obs, deterministic=True)
+        return int(action)
+
+    @classmethod
+    def from_path(cls, path: Path) -> SB3Policy:
+        meta_path = path.with_name("metadata.json")
+        name = path.stem
+        if meta_path.exists():
+            name = str(json.loads(meta_path.read_text(encoding="utf-8")).get("name", name))
+        return cls(path=path, name=name)
 
 
 def load_policy(policy: FinRLPolicy | Callable[[list[float]], int] | Path | str | None = None) -> FinRLPolicy:
@@ -154,31 +180,32 @@ def load_policy(policy: FinRLPolicy | Callable[[list[float]], int] | Path | str 
         path = Path(policy)
         if not path.exists():
             return StubPolicy(reason=f"policy file not found: {path}")
+        if path.is_dir() and (path / "model.zip").exists():
+            path = path / "model.zip"
         if path.suffix.lower() == ".json":
             return TablePolicy.from_json(path)
-        return StubPolicy(reason=f"unsupported policy artifact {path.suffix!r} (expected .json table export)")
+        if path.suffix.lower() == ".zip":
+            try:
+                import stable_baselines3  # noqa: F401
+            except ImportError:
+                return StubPolicy(reason="stable-baselines3 not installed (uv sync --extra rl)")
+            return SB3Policy.from_path(path)
+        return StubPolicy(reason=f"unsupported policy artifact {path.suffix!r} (expected .zip or .json)")
     if hasattr(policy, "act"):
         return cast(FinRLPolicy, policy)
     return CallablePolicy(fn=cast(Callable[[list[float]], int], policy))
 
 
-def train_policy(bars: pd.DataFrame, *, out_path: Path, **_: Any) -> Path:
-    """Training hook (not implemented this cycle).
+def train_policy(bars: pd.DataFrame, *, out_path: Path, **kwargs: Any) -> Path:
+    """Train the FinRL-style PPO baseline; returns the saved ``model.zip`` path.
 
-    Recipe for the next cycle, kept here so the seam is unambiguous:
-    1. ``uv add finrl stable-baselines3 gymnasium`` (heavy; keep optional).
-    2. Build a ``gymnasium.Env`` whose observation is :func:`build_observation` over the
-       training window and whose discrete action space is ``{HOLD, BUY, SELL}``; reward =
-       bar-over-bar equity change under the engine's fill model.
-    3. Train (e.g. PPO) on ``bars`` and export either a ``TablePolicy`` JSON or wrap
-       ``model.predict`` in :class:`CallablePolicy`.
-    4. Evaluate through ``sentinel eval run -p finrl`` with ``FINRL_POLICY_PATH`` set — the
-       harness supplies the same symbols/window/metrics as every other pipeline.
+    Thin wrapper over :func:`sentinel.eval.rl_train.train_ppo` (needs ``uv sync --extra rl``).
+    ``kwargs`` are :class:`~sentinel.eval.rl_train.RLTrainConfig` fields.
     """
 
-    del bars, out_path
-    msg = "FinRL training is not wired this cycle; see sentinel/eval/finrl_adapter.py::train_policy"
-    raise NotImplementedError(msg)
+    from sentinel.eval.rl_train import RLTrainConfig, train_ppo
+
+    return train_ppo(bars, RLTrainConfig(**kwargs), out_path)
 
 
 @dataclass
@@ -188,12 +215,13 @@ class FinRLStrategy:
     policy: FinRLPolicy
     size: float = 1.0
     warmup_bars: int = 50
+    prehistory: pd.DataFrame | None = None
     actions: list[int] = field(default_factory=list)
 
     def on_bar(self, context: BarContext) -> Signal:
-        if len(context.history) < self.warmup_bars:
+        if len(_full_history(context, self.prehistory)) < self.warmup_bars:
             return Signal(action="HOLD", size=None)
-        action = int(self.policy.act(build_observation(context)))
+        action = int(self.policy.act(build_observation(context, self.prehistory)))
         self.actions.append(action)
         if action == ACTION_BUY and context.position_qty <= 0:
             return Signal(action="BUY", size=self.size)
@@ -209,6 +237,14 @@ class FinRLStrategy:
         if isinstance(self.policy, StubPolicy):
             return [f"STUB: {self.policy.reason}"]
         return [f"policy={self.policy.name}"]
+
+
+def _full_history(context: BarContext, prehistory: pd.DataFrame | None) -> pd.DataFrame:
+    history = context.history
+    if prehistory is None or prehistory.empty or history.empty:
+        return history
+    before = cast(pd.DataFrame, prehistory.loc[prehistory.index < history.index[0], ["close"]])
+    return pd.concat([before, cast(pd.DataFrame, history[["close"]])])
 
 
 def _pct_change(close: pd.Series, lag: int) -> float:

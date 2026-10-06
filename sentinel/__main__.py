@@ -616,6 +616,63 @@ def eval_run(
     console.print(f"results: {spec.csv_path()}  (db: {spec.db_path()})")
 
 
+@eval_app.command("train-rl")
+def eval_train_rl(
+    symbol: Annotated[str, typer.Option("--symbol", "-s", help="Symbol to train on")] = "NVDA",
+    train_start: Annotated[str, typer.Option("--train-start", help="YYYY-MM-DD")] = "2021-01-01",
+    train_end: Annotated[str, typer.Option("--train-end", help="YYYY-MM-DD (must be before the eval window)")] = "2025-02-28",
+    eval_start: Annotated[
+        str | None, typer.Option("--eval-start", help="Evaluation start; refuses overlap with training")
+    ] = "2025-03-03",
+    timesteps: Annotated[int, typer.Option("--timesteps", help="PPO training steps")] = 100_000,
+    seed: Annotated[int, typer.Option("--seed")] = 0,
+    reward: Annotated[str, typer.Option("--reward", help="absolute | excess (return minus holding the asset)")] = "absolute",
+    also: Annotated[
+        list[str] | None, typer.Option("--also", help="Extra symbols mixed into training (repeatable)")
+    ] = None,
+    out: Annotated[Path | None, typer.Option("--out", help="Output dir (default ~/.sentinel/models/<name>)")] = None,
+) -> None:
+    """Train the FinRL-style PPO baseline (needs `uv sync --extra rl`)."""
+
+    from datetime import date
+
+    from sentinel.data.router import DataRouter
+    from sentinel.eval.rl_train import RLTrainConfig, train_ppo, training_curve
+    from sentinel.store.db import sentinel_home
+
+    try:
+        import stable_baselines3  # noqa: F401
+    except ImportError:
+        console.print("[red]stable-baselines3 is not installed: run `uv sync --extra rl`[/red]")
+        raise typer.Exit(1) from None
+    cfg = RLTrainConfig(
+        symbol=symbol.upper(),
+        train_start=date.fromisoformat(train_start),
+        train_end=date.fromisoformat(train_end),
+        eval_start=date.fromisoformat(eval_start) if eval_start else None,
+        timesteps=timesteps,
+        seed=seed,
+        reward=reward,
+        train_symbols=tuple(s.upper() for s in (also or [])),
+        slippage_bps=float(load_settings(Path.cwd()).execution.slippage_bps),
+    )
+    name = f"ppo_{cfg.symbol.lower()}_{reward}{'_multi' if cfg.train_symbols else ''}_s{seed}"
+    out_dir = out or (sentinel_home() / "models" / name)
+    router = DataRouter(settings=load_settings(Path.cwd()))
+    symbols = [cfg.symbol, *[s for s in cfg.train_symbols if s != cfg.symbol]]
+    frames = [router.get_ohlcv(sym, cfg.train_start, cfg.train_end) for sym in symbols]
+    console.print(
+        f"training PPO ({reward} reward) on {', '.join(symbols)} {cfg.train_start}..{cfg.train_end} "
+        f"({sum(len(f) for f in frames)} bars), {timesteps} steps"
+    )
+    model_path = train_ppo(frames, cfg, out_dir)
+    curve = training_curve(out_dir)
+    first, last = curve["reward"].head(50).mean(), curve["reward"].tail(50).mean()
+    console.print(f"episodes: {len(curve)}  mean episode log-return first 50: {first:+.4f}  last 50: {last:+.4f}")
+    console.print(f"saved: {model_path}")
+    console.print(f"evaluate: uv run sentinel eval run -p finrl -s {cfg.symbol} --start {eval_start} --end <YYYY-MM-DD> --finrl-policy {out_dir}")
+
+
 @eval_app.command("report")
 def eval_report(
     experiment: Annotated[str, typer.Option("--experiment", help="Experiment id to rebuild")],

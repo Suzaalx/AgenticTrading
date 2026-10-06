@@ -85,8 +85,10 @@ def test_finrl_strategy_maps_actions_to_engine_signals() -> None:
     assert stub.policy.act(build_observation(_context(bars, 30))) == ACTION_HOLD
 
 
-def test_train_policy_is_an_explicit_stub() -> None:
-    with pytest.raises(NotImplementedError, match="not wired this cycle"):
+def test_train_policy_requires_a_training_config() -> None:
+    # train_policy is now wired to the PPO trainer (see tests/eval/test_rl_baseline.py);
+    # calling it without the RLTrainConfig fields fails loudly rather than silently.
+    with pytest.raises(TypeError):
         train_policy(synthetic_bars(), out_path=Path("x"))
 
 
