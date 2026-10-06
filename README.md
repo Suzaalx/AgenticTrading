@@ -341,6 +341,10 @@ uv run sentinel history --debate off   # only runs made with [pipeline] debate_e
 uv run sentinel reflect           # run reflection job
 uv run sentinel memory list       # list stored lessons
 uv run sentinel backtest --symbol SPY --strategy sma_cross
+uv run sentinel eval pipelines    # pipelines the evaluation harness can compare
+uv run sentinel eval run -p sentinel_debate_on -p sentinel_debate_off -p sma_cross -p buy_hold \
+    -s NVDA --start 2025-01-02 --end 2025-06-30      # same data, one metrics table
+uv run sentinel eval report --experiment NVDA_2025-01-02_2025-06-30   # rebuild table from stored runs
 uv run sentinel doctor            # readiness check
 uv run sentinel doctor --live     # include live rail checks
 uv run sentinel graduate options  # promote options to live
@@ -349,6 +353,43 @@ uv run sentinel kill on/off       # kill switch
 uv run sentinel snapshot NVDA     # data snapshot for debugging
 uv run sentinel export <run_id>   # export run bundle to markdown
 ```
+
+---
+
+## Evaluation harness (comparing pipelines on identical data)
+
+`sentinel eval` runs several pipelines over the **same symbols, same date window and the
+same fill model** (decision on bar *t*, fill at the open of *t+1*, configured
+slippage/commission) and emits one tidy metrics row per `pipeline x symbol`:
+
+| pipeline | what it is |
+|---|---|
+| `sentinel_debate_on` | full 11-node multi-agent pipeline (bull/bear debate + research manager) |
+| `sentinel_debate_off` | same pipeline with the research debate bypassed (deterministic analyst roll-up) |
+| `sma_cross` | rule baseline, SMA crossover (`--short-window/--long-window`) |
+| `buy_hold` | rule baseline, buy first bar and hold |
+
+```bash
+# Run: -p is repeatable; --csv SYMBOL=path.csv keeps it fully offline (default: data router)
+uv run sentinel eval run -p sentinel_debate_on -p sentinel_debate_off -p sma_cross -p buy_hold \
+    -s NVDA --start 2025-01-02 --end 2025-06-30 --cadence weekly --experiment pilot1
+# Rebuild the table later without re-running anything
+uv run sentinel eval report --experiment pilot1 --csv-out pilot1.csv
+```
+
+Metrics per row: `total_return`, `annualized_return`, `sharpe`, `max_drawdown`, `win_rate`
+(closed round-trips), `trade_frequency` (non-HOLD decisions per trading year), `exposure_pct`,
+`benchmark_return`, plus per-decision metering pulled from the SQLite journal —
+`avg_tokens_per_decision`, `avg_cost_usd_per_decision`, `avg_llm_latency_ms_per_decision`
+(sum of LLM call latency inside one decision) and `avg_wall_ms_per_decision`.
+
+Outputs live under `~/.sentinel/experiments/<experiment>/` (`results.csv` + `experiment.db`,
+which holds the engine's `backtests` row, the orchestrator's `costs`/`reports` rows keyed by
+`<bt_id>:<date>`, and an `eval_results` row per pipeline). Re-running the same experiment id
+replaces its rows, so costs are never double-counted. Agent pipelines decide on `--cadence`
+(default weekly); rule baselines decide every bar. Agent decisions stop after the Portfolio
+Manager — sizing follows the mandate (`max_position_pct_equity x quantity_pct x PM scale`)
+and the engine simulates the fill, so no paper-broker state leaks between pipelines.
 
 ---
 

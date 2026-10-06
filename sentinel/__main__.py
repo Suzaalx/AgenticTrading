@@ -507,6 +507,115 @@ def backtest(
     console.print(f"max_drawdown: {result.max_drawdown:.4f}")
 
 
+eval_app = typer.Typer(help="Shared evaluation harness: compare pipelines on identical data.")
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("pipelines")
+def eval_pipelines() -> None:
+    """List the pipelines the harness can compare."""
+
+    from sentinel.eval.pipelines import PIPELINES
+
+    for spec in PIPELINES.values():
+        console.print(f"[bold]{spec.name}[/bold] ({spec.kind}): {spec.description}")
+
+
+@eval_app.command("run")
+def eval_run(
+    pipeline: Annotated[
+        list[str], typer.Option("--pipeline", "-p", help="Pipeline name (repeatable); see `sentinel eval pipelines`")
+    ],
+    symbol: Annotated[list[str], typer.Option("--symbol", "-s", help="Symbol (repeatable)")],
+    start: Annotated[str, typer.Option("--start", help="YYYY-MM-DD window start")],
+    end: Annotated[str, typer.Option("--end", help="YYYY-MM-DD window end")],
+    experiment: Annotated[
+        str | None, typer.Option("--experiment", help="Experiment id (default: derived from args)")
+    ] = None,
+    cadence: Annotated[str, typer.Option("--cadence", help="Agent decision cadence: daily|weekly|monthly|N")] = "weekly",
+    csv: Annotated[
+        list[str] | None,
+        typer.Option("--csv", help="Offline OHLCV as SYMBOL=path.csv (repeatable); default: data router"),
+    ] = None,
+    short_window: Annotated[int, typer.Option("--short-window", help="sma_cross short window")] = 20,
+    long_window: Annotated[int, typer.Option("--long-window", help="sma_cross long window")] = 50,
+    starting_cash: Annotated[float | None, typer.Option("--starting-cash")] = None,
+    out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Where experiment.db + results.csv go")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print rows as JSON instead of a table")] = False,
+) -> None:
+    """Run one experiment (fixed symbols + window) for the chosen pipelines and print the metrics table."""
+
+    import json
+    from datetime import date
+
+    from sentinel.eval import ExperimentSpec, render_results_table, run_experiment
+
+    csv_paths: dict[str, Path] = {}
+    for item in csv or []:
+        if "=" not in item:
+            console.print("[red]--csv expects SYMBOL=path.csv[/red]")
+            raise typer.Exit(1)
+        sym, path = item.split("=", 1)
+        csv_paths[sym.upper()] = Path(path)
+    normalized_cadence: str | int = int(cadence) if cadence.isdigit() else cadence
+    experiment_id = experiment or f"{'-'.join(s.upper() for s in symbol)}_{start}_{end}"
+    spec = ExperimentSpec(
+        experiment_id=experiment_id,
+        symbols=[s.upper() for s in symbol],
+        start=date.fromisoformat(start),
+        end=date.fromisoformat(end),
+        pipelines=list(pipeline),
+        cadence=normalized_cadence,
+        starting_cash=starting_cash,
+        strategy_params={"short_window": short_window, "long_window": long_window},
+        csv_paths=csv_paths,
+        out_dir=out_dir,
+    )
+    rows = run_experiment(spec)
+    if json_output:
+        console.print(json.dumps([row.as_record() for row in rows], indent=2, default=str))
+    else:
+        render_results_table(rows, console=console)
+    console.print(f"results: {spec.csv_path()}  (db: {spec.db_path()})")
+
+
+@eval_app.command("report")
+def eval_report(
+    experiment: Annotated[str, typer.Option("--experiment", help="Experiment id to rebuild")],
+    out_dir: Annotated[Path | None, typer.Option("--out-dir", help="Experiment dir (default: ~/.sentinel/experiments/<id>)")] = None,
+    csv_out: Annotated[Path | None, typer.Option("--csv-out", help="Also write the table to this CSV")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print rows as JSON")] = False,
+) -> None:
+    """Rebuild the metrics table for a stored experiment without re-running anything."""
+
+    import json
+
+    from sentinel.eval import load_result_rows, render_results_table, results_to_csv
+    from sentinel.store.db import sentinel_home
+
+    root = out_dir or (sentinel_home() / "experiments" / experiment)
+    db_path = root / "experiment.db"
+    if not db_path.exists():
+        console.print(f"[red]no experiment database at {db_path}[/red]")
+        raise typer.Exit(1)
+    conn = connect(db_path)
+    try:
+        run_migrations(conn)
+        rows = load_result_rows(conn, experiment)
+    finally:
+        conn.close()
+    if not rows:
+        console.print(f"[yellow]no stored rows for experiment {experiment!r}[/yellow]")
+        raise typer.Exit(1)
+    if json_output:
+        console.print(json.dumps([row.as_record() for row in rows], indent=2, default=str))
+    else:
+        render_results_table(rows, console=console)
+    if csv_out is not None:
+        results_to_csv(rows, csv_out)
+        console.print(f"wrote {csv_out}")
+
+
 @app.command()
 def portfolio(
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON")] = False,
