@@ -48,9 +48,13 @@ class MarketAnalyst(Agent):
             "run_id": state.run_id,
             "symbol": state.snapshot.symbol,
             "as_of": state.snapshot.as_of.isoformat(),
-            "ohlcv_table": _render_frame(state.snapshot.ohlcv_path, max_rows=90),
-            "indicator_table": _render_frame(state.snapshot.indicators_path, max_rows=90),
+            "ohlcv_table": _render_frame(state.snapshot.ohlcv_path, max_rows=self._history_bars()),
+            "indicator_table": _render_frame(state.snapshot.indicators_path, max_rows=self._history_bars()),
         }
+
+
+    def _history_bars(self) -> int:
+        return max(1, int(getattr(self.settings.pipeline, "analyst_history_bars", 90)))
 
 
 class FundamentalsAnalyst(Agent):

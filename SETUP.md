@@ -65,7 +65,10 @@ template and fill in whatever you have:
 cp .env.example .env
 ```
 
-Then set any of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ALPHA_VANTAGE_KEY`, `FINNHUB_KEY`.
+Then set the LLM key matching `config.toml [llm].provider` — `GROQ_API_KEY` by default (free tier),
+or `GEMINI_API_KEY`, or run a local Ollama server (`provider = "ollama"`, no key). `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` are only needed if you opt back into those providers. Data keys (`ALPHA_VANTAGE_KEY`,
+`FINNHUB_KEY`) are optional.
 Tests and offline/paper flows work without keys.
 
 ## 7. Safety note

@@ -17,6 +17,7 @@ class LLMResult[T]:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = "fake"
+    latency_ms: int = 0
 
 
 class StructuredLLM(Protocol):
