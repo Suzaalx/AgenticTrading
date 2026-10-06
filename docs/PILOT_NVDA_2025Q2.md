@@ -41,23 +41,31 @@ sma_cross  NVDA    2025-03-03..2025-05-30  25.20%    4.04   -3.16%  0.00%       
 buy_hold   NVDA    2025-03-03..2025-05-30  22.06%    1.56  -22.49%    n/a        4.0         63        0  0.0000           0            0       0
 ```
 
-### Sentinel debate-on / debate-off
+### Sentinel debate-on / debate-off — final (2026-10-06)
 
-**Incomplete — not reportable yet.** Attempt 2 (2026-09-29, 18:30–21:20 UTC) ran into Groq's free-tier
-**daily** cap of 200k tokens per model:
+Completed over four `--resume` passes (attempts 2–5); 0 failed decisions in the final rows.
 
-| variant | decisions completed | failures |
-|---|---|---|
-| `sentinel_debate_on` | 9 / 13 | 3 × HTTP 429 "tokens per day", 1 × `SchemaParseError` (trader omitted `quantity_pct`) |
-| `sentinel_debate_off` | 0 / 13 | 13 × HTTP 429 "tokens per day" (allowance already spent by debate-on) |
+```
+pipeline             ret     sharpe  maxDD    trades/yr  decisions  tok/dec  $/dec  llm_ms/dec  failed
+sentinel_debate_on   +1.16%  4.11    -0.16%   16.0       13         26,828   0.00   136,630     0
+sentinel_debate_off   0.00%  0.00     0.00%    0.0       13          9,076   0.00    69,347     0
+```
 
-Failed decisions become HOLD, so the stored rows (debate-on +1.16%, debate-off 0.00%) are biased toward
-inaction and must not be read as results. Cost side from the 9 completed debate-on decisions: ~25.5k
-tokens per decision (~17.4k on gpt-oss-20b, ~8.1k on gpt-oss-120b), $0, ~13 s mean model time per call.
+| | plan stance (13 weeks) | mean plan conviction | trader actions |
+|---|---|---|---|
+| debate on (research manager) | 8 bearish, 4 bullish, 1 neutral | 58.1 | 9 HOLD, 3 BUY, 1 SELL |
+| debate off (analyst roll-up) | 4 bearish, 6 bullish, 3 neutral | 8.5 | 13 HOLD |
 
-Remaining work: 4 debate-on + 13 debate-off decisions ≈ 190k tokens on gpt-oss-20b — at the edge of one
-day's allowance, so it may need two `--resume` passes. Run the command above once the rolling window has
-freed (≈ 21:30 UTC the next day).
+Reading it:
+- The debate roughly **triples tokens per decision** (26.8k vs 9.1k) and doubles model time.
+- With the debate the pipeline acted 4 times; without it, never. **But this is partly an artifact
+  of the ablation design:** the deterministic roll-up that replaces the research manager scores
+  news/sentiment/fundamentals, which are empty in replay, so its conviction collapses (8.5/100)
+  and the trader holds. A fairer debate-off variant keeps the research manager but gives it no
+  debate transcript — planned for the next phase.
+- Sentinel's returns are tiny in absolute terms because the mandate caps each position at 10% of
+  equity and the trader requested 2–3% on two of its three BUYs; compare on risk-adjusted terms.
+- n = 13 decisions on one stock: these are pilot numbers, not conclusions.
 
 ### Harness validation dry-run (real NVDA bars, `FakeLLM` standing in for Groq)
 
@@ -139,4 +147,4 @@ rows without double-counting costs.
 Provider groq; quick `openai/gpt-oss-20b`, deep `openai/gpt-oss-120b` (trader, research manager, PM);
 `analyst_history_bars = 25`; `max_tokens = 2048`; `max_debate_rounds = 2`; `max_position_pct_equity = 10`;
 weekly cadence. Logs: `~/.sentinel/experiments/pilot_nvda_2025q2/sentinel_rows.log` (attempt 2) and
-`sentinel_rows.attempt1.log`. Final combined table to be added after the `--resume` pass.
+`sentinel_rows.attempt1.log`. Final rows above (attempt 5, 2026-10-06). Trader schema fix 66c37c6 applied to the re-run decisions only; completed decisions were reused unchanged.
