@@ -43,11 +43,33 @@ class SentinelPipelineAdapter:
     mandate: Mandate
     equity_hint: float
     traces: list[DecisionTrace] = field(default_factory=list)
+    # run_id -> completed decision loaded from a previous run of the same experiment.
+    cached: dict[str, RunState] = field(default_factory=dict)
+    reused: int = 0
 
     async def __call__(
         self, snapshot: DataSnapshot, *, option_chain: OptionChainSnapshot | None = None
     ) -> Signal:
         started = time.perf_counter()
+        cached_state = self.cached.get(snapshot.run_id)
+        if cached_state is not None:
+            # Decisions depend only on their point-in-time snapshot, so a stored
+            # completed decision is exactly what a fresh call would have been fed.
+            self.reused += 1
+            signal = decision_to_signal(cached_state, mandate=self.mandate, equity=self.equity_hint)
+            self.traces.append(
+                DecisionTrace(
+                    run_id=snapshot.run_id,
+                    as_of=snapshot.as_of.date().isoformat(),
+                    action=signal.action,
+                    size=signal.size,
+                    verdict=cached_state.pm_decision.verdict if cached_state.pm_decision else None,
+                    status="completed",
+                    error=None,
+                    wall_ms=_stored_llm_ms(self.runner.conn, snapshot.run_id),
+                )
+            )
+            return signal
         try:
             state = await self.runner.decide_from_snapshot(
                 snapshot, option_chain=option_chain, stop_after=STOP_NODE
@@ -124,3 +146,42 @@ def summarize_traces(traces: list[DecisionTrace]) -> dict[str, Any]:
         "failed_decisions": failures,
         "avg_wall_ms": (sum(wall) / decisions) if decisions else 0.0,
     }
+
+
+def load_completed_decisions(conn: Any, bt_id: str) -> dict[str, RunState]:
+    """Rebuild completed decisions (trader proposal + PM verdict, or trader HOLD) from ``reports``."""
+
+    from sentinel.core.models import PMDecision, TradeProposal
+    from sentinel.orchestrator.state import initial_state
+
+    rows = conn.execute(
+        "SELECT run_id, agent, structured_json FROM reports "
+        "WHERE (run_id LIKE ?) AND agent IN ('trader', 'portfolio_manager') ORDER BY created_at",
+        (f"{bt_id}:%",),
+    ).fetchall()
+    by_run: dict[str, dict[str, str]] = {}
+    for row in rows:
+        by_run.setdefault(row["run_id"], {})[row["agent"]] = row["structured_json"]
+    completed: dict[str, RunState] = {}
+    for run_id, agents in by_run.items():
+        trader_json = agents.get("trader")
+        if trader_json is None:
+            continue
+        try:
+            proposal = TradeProposal.model_validate_json(trader_json)
+        except Exception:  # an option proposal or malformed row: recompute it
+            continue
+        pm = agents.get("portfolio_manager")
+        if proposal.action != "HOLD" and pm is None:
+            continue  # stopped between trader and PM -> not complete
+        state = initial_state("RESUMED", run_id=run_id)
+        state.status = "completed"
+        state.trade_proposal = proposal
+        state.pm_decision = PMDecision.model_validate_json(pm) if pm is not None else None
+        completed[run_id] = state
+    return completed
+
+
+def _stored_llm_ms(conn: Any, run_id: str) -> int:
+    row = conn.execute("SELECT COALESCE(SUM(latency_ms), 0) AS ms FROM costs WHERE run_id = ?", (run_id,)).fetchone()
+    return int(row["ms"] or 0)

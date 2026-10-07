@@ -9,6 +9,7 @@ role_models = { trader = "openai/gpt-oss-120b", portfolio_manager = "openai/gpt-
 temperature = 0.0
 max_tokens = 2048   # structured JSON replies are small; free tiers reserve this against the TPM budget
 max_retries = 3
+request_timeout_seconds = 120   # one hung hosted response should cost a timeout, not the SDK's 600s x 3
 monthly_budget_usd = 15.0
 
 # Per-provider overrides (all optional). Built-in defaults:

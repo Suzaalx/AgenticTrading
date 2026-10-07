@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -92,7 +93,13 @@ async def test_experiment_runs_all_pipelines_on_identical_bars_and_writes_table(
     # Debate off uses fewer LLM calls per decision than debate on (no bull/bear/judge).
     on_calls = sum(1 for c in llm.calls if c.agent in {"bull_researcher", "bear_researcher", "research_manager"})
     assert on_calls > 0
-    assert by_name["sentinel_debate_off"].config == '{"cadence":"weekly","debate_enabled":false}'
+    off_config = json.loads(by_name["sentinel_debate_off"].config)
+    assert off_config["debate_enabled"] is False and off_config["cadence"] == "weekly"
+    assert set(off_config["llm"]) == {
+        "provider", "quick_model", "deep_model", "role_models", "analyst_history_bars", "max_debate_rounds",
+        "max_position_pct_equity",
+    }
+    assert off_config["llm"]["max_position_pct_equity"] == 10.0
     # Cost metering is derived from the experiment DB, keyed per bt_id.
     conn = connect(spec.db_path())
     run_migrations(conn)
@@ -137,7 +144,7 @@ async def test_results_are_reproducible_from_stored_runs_and_reruns_replace(tmp_
     metered = conn.execute(
         "SELECT COUNT(*) FROM costs WHERE run_id LIKE ?", (f"{off.bt_id}:%",)
     ).fetchone()[0]
-    assert metered == off.decisions * 8  # 4 analysts + trader + 3 risk debaters... per decision
+    assert metered == off.decisions * 8  # 3 analysts + trader + 3 risk + PM per decision
     conn.close()
 
 
@@ -146,3 +153,71 @@ def test_unknown_pipeline_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown pipeline"):
         get_pipeline("nope")
+
+
+@pytest.mark.asyncio
+async def test_max_position_pct_override_changes_sentinel_exposure(tmp_path: Path) -> None:
+    bars = synthetic_bars()
+    base = _spec(tmp_path, ["sentinel_debate_off"])
+    full = ExperimentSpec(**{**base.__dict__, "experiment_id": "full", "max_position_pct_equity": 100.0, "out_dir": tmp_path / "full"})
+    kwargs = dict(settings=settings(), mandate=mandate(), router=FixtureRouter(), bars={"NVDA": bars})
+
+    capped = (await run_experiment_async(base, llm=_llm_without_debate_roles(), **kwargs))[0]
+    uncapped = (await run_experiment_async(full, llm=_llm_without_debate_roles(), **kwargs))[0]
+
+    assert json.loads(capped.config)["llm"]["max_position_pct_equity"] == 10.0
+    assert json.loads(uncapped.config)["llm"]["max_position_pct_equity"] == 100.0
+    # Same decisions, bigger fills: fixture BUYs 50% of the allowance each week.
+    assert uncapped.signals == capped.signals
+    assert abs(uncapped.total_return) > abs(capped.total_return)
+
+
+class _QuotaExhausted(Exception):
+    status_code = 500  # not a 429, so the gateway does not wait it out in the test
+
+
+@pytest.mark.asyncio
+async def test_resume_reuses_completed_decisions_and_only_redoes_failed_ones(tmp_path: Path) -> None:
+    bars = synthetic_bars()
+    spec = _spec(tmp_path, ["sentinel_debate_off"])
+    kwargs = dict(settings=settings(), mandate=mandate(), router=FixtureRouter(), bars={"NVDA": bars})
+
+    # First run: the trader "hits the daily token cap" on every other decision.
+    flaky = _llm_without_debate_roles()
+    good_trader = flaky.responses["trader"]
+    calls = {"n": 0}
+
+    def trader(agent, prompt, schema, kw):
+        calls["n"] += 1
+        if calls["n"] % 2 == 0:
+            raise _QuotaExhausted("tokens per day exhausted")
+        return good_trader
+
+    flaky.responses["trader"] = trader
+    first = (await run_experiment_async(spec, llm=flaky, **kwargs))[0]
+    assert 0 < first.failed_decisions < first.decisions
+
+    # Resume with a healthy model: only the failed decisions are re-queried.
+    healthy = _llm_without_debate_roles()
+    resumed_spec = ExperimentSpec(**{**spec.__dict__, "resume": True})
+    resumed = (await run_experiment_async(resumed_spec, llm=healthy, **kwargs))[0]
+
+    trader_calls = sum(1 for c in healthy.calls if c.agent == "trader")
+    assert trader_calls == first.failed_decisions
+    assert resumed.failed_decisions == 0 and resumed.decisions == first.decisions
+    assert json.loads(resumed.config)["reused_decisions"] == first.decisions - first.failed_decisions
+
+    # Same result as a clean single run, and costs are neither lost nor double-counted.
+    clean_spec = ExperimentSpec(**{**spec.__dict__, "experiment_id": "clean", "out_dir": tmp_path / "clean"})
+    clean = (await run_experiment_async(clean_spec, llm=_llm_without_debate_roles(), **kwargs))[0]
+    assert resumed.total_return == pytest.approx(clean.total_return)
+    assert resumed.signals == clean.signals
+    conn = connect(spec.db_path())
+    run_migrations(conn)
+    per_decision = conn.execute(
+        "SELECT run_id, COUNT(*) FROM costs WHERE run_id LIKE ? GROUP BY run_id", (f"{resumed.bt_id}:%",)
+    ).fetchall()
+    assert len(per_decision) == resumed.decisions
+    # 3 metered analysts (sentiment skips the LLM: replay snapshots carry no news) + trader + 3 risk + PM
+    assert all(row[1] == 8 for row in per_decision)
+    conn.close()

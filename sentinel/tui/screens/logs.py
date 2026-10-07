@@ -52,7 +52,7 @@ class LogsScreen(Widget):
             self._audit_lines.append(
                 f"{record['ts'][:19]} AUDIT {record['kind']} actor={record['actor']} {payload}"
             )
-        self._render()
+        self._render_logs()
 
     def handle_event(self, event: Event) -> None:
         if isinstance(event, LogLine):
@@ -63,21 +63,21 @@ class LogsScreen(Widget):
             if len(self._app_lines) > 200:
                 del self._app_lines[: len(self._app_lines) - 200]
             if not self._paused:
-                self._render()
+                self._render_logs()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "logs-filter":
             self._level = str(event.value)
-            self._render()
+            self._render_logs()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "logs-search":
             self._search = event.value.strip().lower()
-            self._render()
+            self._render_logs()
 
     def on_mouse_scroll_up(self) -> None:
         self._paused = True
-        self._render()
+        self._render_logs()
 
     def action_focus_search(self) -> None:
         self.query_one("#logs-search", Input).focus()
@@ -89,9 +89,9 @@ class LogsScreen(Widget):
 
     def action_toggle_pause(self) -> None:
         self._paused = not self._paused
-        self._render()
+        self._render_logs()
 
-    def _render(self) -> None:
+    def _render_logs(self) -> None:
         threshold = {"all": 0, "debug": 0, "info": 1, "warning": 2, "error": 3}
         level_rank = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
         min_rank = threshold.get(self._level, 0)

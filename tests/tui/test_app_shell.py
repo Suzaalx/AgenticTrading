@@ -20,6 +20,7 @@ async def test_app_mounts_tabs_footer_and_keys() -> None:
             "backtest",
             "memory",
             "logs",
+            "live-rh",
         ]
         assert app.query_one(Footer)
 

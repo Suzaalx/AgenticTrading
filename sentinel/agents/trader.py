@@ -72,7 +72,24 @@ class Trader(Agent):
     agent_name: ClassVar[str] = "trader"
     tier: ClassVar[Literal["deep"]] = "deep"
     prompt_template: ClassVar[str] = "trader.md"
+    class EquityPayload(Payload):
+        """Payload shown to the model when no option candidates are offered.
+
+        The shared Payload marks quantity_pct/order_type optional because option proposals
+        don't use them; the requirement was only enforced after the fact, so open-weight
+        models routinely omitted quantity_pct on BUYs and the decision was discarded.
+        Making the fields required here puts the requirement in the schema the model sees.
+        """
+
+        quantity_pct: float = Field(..., ge=0, le=100)  # pyright: ignore[reportGeneralTypeIssues]
+        order_type: Literal["market"] = "market"
+
     response_schema: ClassVar[type[Payload]] = Payload
+
+    def schema_for(self, state: RunState) -> type[Payload]:
+        """Equity-only runs get the stricter schema; option runs keep the union payload."""
+
+        return self.response_schema if state.option_candidates else self.EquityPayload
     report_type: ClassVar[type[TradeProposal]] = TradeProposal
 
     def __init__(
@@ -123,7 +140,7 @@ class Trader(Agent):
                 result = await self.llm.complete_structured(
                     agent=self.agent_name,
                     prompt=prompt,
-                    schema=self.response_schema,
+                    schema=self.schema_for(state),
                     tier=self.tier,
                 )
                 payload = self._payload_data(result.structured)

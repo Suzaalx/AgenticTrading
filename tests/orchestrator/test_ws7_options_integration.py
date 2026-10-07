@@ -21,6 +21,13 @@ from sentinel.store.db import sentinel_home
 from ._helpers import FixtureRouter, conn, fake_llm, mandate, settings
 
 
+def _as_of() -> datetime:
+    """Quotes are stamped with as_of and the paper broker compares them to the real clock,
+    so a fixed date made these tests fail (stale quote) whenever the market was open."""
+
+    return datetime.now(UTC).replace(microsecond=0)
+
+
 class OptionFixtureRouter(FixtureRouter):
     def __init__(self) -> None:
         super().__init__(price=Decimal("100"))
@@ -98,7 +105,7 @@ async def test_full_option_decision_run_fills_and_journals(tmp_path: Path) -> No
     )
     queue = await active.bus.subscribe_queue()
 
-    state = await active.run("NVDA", as_of=datetime(2026, 7, 7, 19, 30, tzinfo=UTC))
+    state = await active.run("NVDA", as_of=_as_of())
 
     assert state.status == "completed"
     assert state.option_chain is not None
@@ -141,7 +148,7 @@ async def test_option_resume_uses_checkpointed_candidates(tmp_path: Path) -> Non
         router=router,  # type: ignore[arg-type]
         db_path=tmp_path / "sentinel.db",
     )
-    partial = await first.run("NVDA", as_of=datetime(2026, 7, 7, 19, 30, tzinfo=UTC), stop_after="research_manager")
+    partial = await first.run("NVDA", as_of=_as_of(), stop_after="research_manager")
     assert partial.option_chain is not None
     assert partial.option_candidates
 
@@ -169,7 +176,7 @@ async def test_option_kill_switch_mid_run_halts(tmp_path: Path) -> None:
         router=OptionFixtureRouter(),  # type: ignore[arg-type]
         db_path=tmp_path / "sentinel.db",
     )
-    state = await active.run("NVDA", as_of=datetime(2026, 7, 7, 19, 30, tzinfo=UTC), stop_after="mandate_gate")
+    state = await active.run("NVDA", as_of=_as_of(), stop_after="mandate_gate")
     assert state.final_order is not None
 
     engage(actor="test")
@@ -189,7 +196,7 @@ async def test_default_equity_run_does_not_call_option_llm(tmp_path: Path) -> No
         db_path=tmp_path / "sentinel.db",
     )
 
-    state = await active.run("NVDA", as_of=datetime(2026, 7, 7, 19, 30, tzinfo=UTC))
+    state = await active.run("NVDA", as_of=_as_of())
 
     assert state.status == "completed"
     assert state.option_chain is None
@@ -208,7 +215,7 @@ async def test_option_run_fake_llm_cost_stays_under_budget(tmp_path: Path) -> No
         db_path=tmp_path / "sentinel.db",
     )
 
-    state = await active.run("NVDA", as_of=datetime(2026, 7, 7, 19, 30, tzinfo=UTC))
+    state = await active.run("NVDA", as_of=_as_of())
 
     assert state.total_cost_usd < Decimal("0.50")
 
