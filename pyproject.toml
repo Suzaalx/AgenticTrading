@@ -30,6 +30,11 @@ sentinel = "sentinel.__main__:main"
 
 [project.optional-dependencies]
 robinhood = ["cryptography>=43"]
+rl = [
+    "gymnasium>=0.29",
+    "stable-baselines3>=2.3",
+    "torch>=2.2",
+]
 
 [build-system]
 requires = ["hatchling"]

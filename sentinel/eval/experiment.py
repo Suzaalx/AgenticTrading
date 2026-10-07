@@ -113,6 +113,8 @@ class ExperimentContext:
     strategy_params: Mapping[str, Any]
     # symbol -> {run_id -> completed RunState}; filled per pipeline when spec.resume is set.
     resume_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # symbol -> bars strictly before spec.start, for indicator warm-up (never traded on).
+    prehistory: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 def bt_id_for(spec: ExperimentSpec, pipeline: str, symbol: str) -> str:
@@ -131,6 +133,7 @@ async def run_experiment_async(
     llm: StructuredLLM | None = None,
     router: Any | None = None,
     bars: Mapping[str, pd.DataFrame] | None = None,
+    prehistory: Mapping[str, pd.DataFrame] | None = None,
     conn: sqlite3.Connection | None = None,
     write_csv: bool = True,
     print_table: bool = False,
@@ -167,6 +170,7 @@ async def run_experiment_async(
         strategy_params=spec.strategy_params,
     )
     frames = {symbol.upper(): frame for symbol, frame in (bars or {}).items()}
+    ctx.prehistory = {symbol.upper(): frame for symbol, frame in (prehistory or {}).items()}
     rows: list[ResultRow] = []
     try:
         for symbol in spec.symbols:
@@ -175,6 +179,8 @@ async def run_experiment_async(
             if frame is None:
                 frame = load_bars(spec, symbol, settings=settings, router=router)
                 frames[symbol] = frame
+            if symbol not in ctx.prehistory and not spec.csv_paths:
+                ctx.prehistory[symbol] = load_prehistory(spec, symbol, settings=settings, router=router)
             for pipeline_spec in specs:
                 rows.append(await _run_one(ctx, pipeline_spec, symbol, frame))
         if write_csv:
@@ -279,6 +285,35 @@ def load_bars(
         msg = f"no bars for {symbol} in {spec.start}..{spec.end}"
         raise ValueError(msg)
     return window
+
+
+def load_prehistory(
+    spec: ExperimentSpec,
+    symbol: str,
+    *,
+    days: int = 150,
+    settings: Settings | None = None,
+    router: Any | None = None,
+) -> pd.DataFrame:
+    """Bars from the ``days`` calendar days before ``spec.start`` (empty frame on any failure).
+
+    Only used to warm up rolling features; the engine never trades on these bars.
+    """
+
+    from datetime import timedelta
+
+    try:
+        if router is None:
+            from sentinel.data.router import DataRouter
+
+            router = DataRouter(settings=settings or load_settings(Path.cwd()))
+        frame = router.get_ohlcv(symbol, spec.start - timedelta(days=days), spec.start - timedelta(days=1))
+    except Exception:  # warm-up data is optional; strategies fall back to window-only history
+        return pd.DataFrame()
+    frame = frame.copy()
+    frame.columns = [str(c).lower() for c in frame.columns]
+    frame.index = pd.to_datetime(frame.index)
+    return frame.loc[frame.index < pd.Timestamp(spec.start)].sort_index()
 
 
 def _clear_previous_run(conn: sqlite3.Connection, bt_id: str) -> None:
