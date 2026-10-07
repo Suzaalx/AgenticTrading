@@ -121,6 +121,27 @@ def _buy_hold(params: dict[str, Any]) -> Strategy:
     return BuyHoldStrategy(**{k: v for k, v in params.items() if k in {"size"}})
 
 
+def _build_finrl(ctx: ExperimentContext, symbol: str) -> BuiltPipeline:
+    """FinRL seam: a policy (trained elsewhere) drives the engine bar-by-bar; stubbed if absent."""
+
+    from sentinel.eval.finrl_adapter import FinRLStrategy, load_policy
+
+    params = dict(ctx.strategy_params or {})
+    inner = FinRLStrategy(
+        policy=load_policy(params.get("finrl_policy")),
+        warmup_bars=int(params.get("finrl_warmup_bars", 50)),
+    )
+    strategy = InstrumentedStrategy(inner)
+
+    def summarize() -> dict[str, Any]:
+        summary = strategy.summary()
+        summary["policy"] = inner.policy.name
+        summary["stub"] = inner.is_stub
+        return summary
+
+    return BuiltPipeline(kind="rule", strategy=strategy, summarize=summarize, notes=inner.notes)
+
+
 PIPELINES: dict[str, PipelineSpec] = {
     "sentinel_debate_on": PipelineSpec(
         name="sentinel_debate_on",
@@ -149,6 +170,17 @@ PIPELINES: dict[str, PipelineSpec] = {
         description="Rule baseline: buy on the first bar and hold.",
         config={"strategy": "buy_hold"},
         build=_build_rule(_buy_hold),
+    ),
+    "finrl": PipelineSpec(
+        name="finrl",
+        kind="rule",
+        description=(
+            "FinRL deep-RL policy behind the shared interface (sentinel/eval/finrl_adapter.py). "
+            "Runs as a HOLD-only stub flagged in `notes` until a trained policy is supplied via "
+            "FINRL_POLICY_PATH or strategy_params['finrl_policy']."
+        ),
+        config={"strategy": "finrl"},
+        build=_build_finrl,
     ),
 }
 
