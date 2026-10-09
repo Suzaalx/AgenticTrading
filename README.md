@@ -366,6 +366,7 @@ slippage/commission) and emits one tidy metrics row per `pipeline x symbol`:
 |---|---|
 | `sentinel_debate_on` | full 11-node multi-agent pipeline (bull/bear debate + research manager) |
 | `sentinel_debate_off` | same pipeline with the research debate bypassed (deterministic analyst roll-up) |
+| `sentinel_debate_off_judge` | debate bypassed but the same LLM research manager writes the plan from the analyst reports (fairer ablation; `[pipeline] debate_off_planner = "research_manager"`) |
 | `sma_cross` | rule baseline, SMA crossover (`--short-window/--long-window`) |
 | `buy_hold` | rule baseline, buy first bar and hold |
 | `finrl` | FinRL-style PPO agent (Stable-Baselines3). Train with `uv sync --extra rl` then `uv run sentinel eval train-rl --symbol NVDA [--reward excess --also AAPL ...]`, evaluate with `--finrl-policy ~/.sentinel/models/<name>`; without a policy it runs as a flagged HOLD-only stub |

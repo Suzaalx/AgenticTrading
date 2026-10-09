@@ -67,6 +67,26 @@ Reading it:
   equity and the trader requested 2–3% on two of its three BUYs; compare on risk-adjusted terms.
 - n = 13 decisions on one stock: these are pilot numbers, not conclusions.
 
+### Fairer ablation: debate off, same judge (2026-10-09, PR #7)
+
+`sentinel_debate_off_judge` skips the bull/bear debate but keeps the LLM research manager
+(`ResearchManagerNoDebate`, same model and schema, told no debate took place). Same window,
+models and settings; 13/13 decisions, 0 failures.
+
+| variant | plan stances | mean conviction | trader actions | return | Sharpe | max DD | tok/dec | first-pass valid |
+|---|---|---|---|---|---|---|---|---|
+| debate on | 8 bearish, 4 bullish, 1 neutral | 58.1 | 9 HOLD, 3 BUY, 1 SELL | +1.16% | 4.11 | -0.16% | 26,828 | not measured |
+| debate off, same judge | 4 bearish, 4 bullish, 5 neutral | 41.5 | 12 HOLD, 1 BUY | +0.06% | 0.94 | -0.11% | 13,241 | 100% |
+| debate off, roll-up | 4 bearish, 6 bullish, 3 neutral | 8.5 | 13 HOLD | 0.00% | - | 0.00% | 9,076 | not measured |
+
+Reading it:
+- The roll-up's "never trades" was mostly an artifact of its conviction formula in news-less replay.
+- Holding the judge constant, the debate raised mean conviction (41.5 -> 58.1), made the pipeline act
+  4x instead of once, and gave a better risk-adjusted result on this window, for ~2x the tokens.
+- Still 13 decisions on one stock: a signal to test at scale, not a conclusion.
+- "first-pass valid" = share of LLM calls whose first structured answer validated (new in PR #7);
+  older runs predate the column.
+
 ### Harness validation dry-run (real NVDA bars, `FakeLLM` standing in for Groq)
 
 Run to prove the plumbing on real data without spending free-tier quota. The FakeLLM

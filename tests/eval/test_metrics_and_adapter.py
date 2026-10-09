@@ -156,7 +156,7 @@ def test_first_pass_validity_and_schema_failures_from_sqlite(tmp_path: Path) -> 
     summary = decision_costs(conn, "x__p__NVDA")
     assert (summary.llm_calls, summary.first_pass_calls) == (4, 3)
     assert summary.first_pass_valid_rate == 0.75
-    assert DecisionCostSummary(0, 0, 0.0, 0).first_pass_valid_rate == 1.0
+    assert DecisionCostSummary(0, 0, 0.0, 0).first_pass_valid_rate is None  # not measured
 
     traces = [
         DecisionTrace("a", "d1", "HOLD", None, None, "failed", "SchemaParseError: missing quantity_pct", 1),
@@ -171,4 +171,4 @@ def test_new_columns_default_when_rebuilding_old_rows() -> None:
     old = {c: 0 for c in RESULT_COLUMNS if c not in {"first_pass_valid_rate", "schema_failures"}}
     old.update(experiment="e", pipeline="p", config="{}", symbol="NVDA", start="s", end="e", notes="")
     row = row_from_record(old)
-    assert row.first_pass_valid_rate == 1.0 and row.schema_failures == 0
+    assert row.first_pass_valid_rate is None and row.schema_failures == 0

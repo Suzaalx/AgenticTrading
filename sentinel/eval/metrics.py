@@ -81,7 +81,7 @@ class ResultRow:
     avg_llm_latency_ms_per_decision: float
     avg_wall_ms_per_decision: float
     failed_decisions: int
-    first_pass_valid_rate: float = 1.0
+    first_pass_valid_rate: float | None = None  # None = not measured (runs before attempts were logged)
     schema_failures: int = 0
     notes: str = ""
     bt_id: str = ""
@@ -106,10 +106,13 @@ class DecisionCostSummary:
     first_pass_calls: int = 0
 
     @property
-    def first_pass_valid_rate(self) -> float:
-        """Share of successful LLM calls whose first structured answer validated (no retry)."""
+    def first_pass_valid_rate(self) -> float | None:
+        """Share of successful LLM calls whose first structured answer validated (no retry).
 
-        return (self.first_pass_calls / self.llm_calls) if self.llm_calls else 1.0
+        Only calls that logged ``attempts`` count; ``None`` means the runs predate that column.
+        """
+
+        return (self.first_pass_calls / self.llm_calls) if self.llm_calls else None
 
     def per_decision(self, decisions: int) -> tuple[float, float, float]:
         if decisions <= 0:
@@ -129,8 +132,8 @@ def decision_costs(conn: sqlite3.Connection, bt_id: str) -> DecisionCostSummary:
                   COALESCE(SUM(tokens_in + tokens_out), 0) AS tokens,
                   COALESCE(SUM(cost_usd), 0) AS cost,
                   COALESCE(SUM(latency_ms), 0) AS latency,
-                  COUNT(*) AS calls,
-                  COALESCE(SUM(CASE WHEN COALESCE(attempts, 1) <= 1 THEN 1 ELSE 0 END), 0) AS first_pass
+                  COUNT(attempts) AS calls,
+                  COALESCE(SUM(CASE WHEN attempts = 1 THEN 1 ELSE 0 END), 0) AS first_pass
            FROM costs WHERE run_id = ? OR run_id LIKE ?""",
         (bt_id, f"{bt_id}:%"),
     ).fetchone()
@@ -257,7 +260,7 @@ def format_results_table(rows: list[ResultRow]) -> str:
                 f"{row.avg_llm_latency_ms_per_decision:.0f}",
                 f"{row.avg_wall_ms_per_decision:.0f}",
                 str(row.failed_decisions),
-                _pct(row.first_pass_valid_rate) if row.decisions and row.total_tokens else "-",
+                "-" if row.first_pass_valid_rate is None else _pct(row.first_pass_valid_rate),
                 row.notes[:80],
             ]
         )
@@ -295,6 +298,8 @@ def row_from_record(record: dict[str, Any]) -> ResultRow:
             coerced[column] = int(value or 0)
         elif column in {"experiment", "pipeline", "config", "symbol", "start", "end", "notes"}:
             coerced[column] = str(value or "")
+        elif column == "first_pass_valid_rate":
+            coerced[column] = None if value in (None, "") else float(value)
         else:
             coerced[column] = float(value or 0.0)
     for extra in ("bt_id", "equity_curve"):
