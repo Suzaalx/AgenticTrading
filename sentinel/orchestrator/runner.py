@@ -146,6 +146,7 @@ class OrchestratorRunner:
         max_rounds = self._rounds_for_depth(depth)
         state = initial_state(symbol, as_of=as_of, run_id=run_id)
         state.debate_enabled = self.settings.pipeline.debate_enabled
+        state.debate_variant = self._debate_variant()
         store = RunCheckpointStore(state.run_id)
         self._persist_run(state)
         async with self._active_lock:
@@ -212,6 +213,7 @@ class OrchestratorRunner:
 
         state = initial_state(snapshot.symbol, as_of=snapshot.as_of, run_id=snapshot.run_id, mode="backtest_step")
         state.debate_enabled = self.settings.pipeline.debate_enabled
+        state.debate_variant = self._debate_variant()
         state.snapshot = snapshot
         state.option_chain = option_chain
         store = RunCheckpointStore(state.run_id.replace(":", "_"))
@@ -232,6 +234,7 @@ class OrchestratorRunner:
             max_debate_rounds=max_rounds,
             max_risk_rounds=max(1, min(max_rounds, self.settings.pipeline.max_risk_discuss_rounds)),
             debate_enabled=self.settings.pipeline.debate_enabled,
+            debate_off_planner=self.settings.pipeline.debate_off_planner,
             checkpoint=store.save,
             cancel_check=lambda run_id: RunCheckpointStore(run_id).is_cancelled(),
         )
@@ -249,6 +252,12 @@ class OrchestratorRunner:
             audit=append_audit,
         )
         return self.execution_router
+
+    def _debate_variant(self) -> str:
+        pipeline = self.settings.pipeline
+        if pipeline.debate_enabled:
+            return "on"
+        return "off_judge" if pipeline.debate_off_planner == "research_manager" else "off_rollup"
 
     def _rounds_for_depth(self, depth: str) -> int:
         return int(self.settings.pipeline.depth_presets.get(depth, self.settings.pipeline.max_debate_rounds))
@@ -274,6 +283,7 @@ class OrchestratorRunner:
                 cost_usd=state.total_cost_usd,
                 tokens=state.total_tokens,
                 debate_enabled=state.debate_enabled,
+                debate_variant=state.debate_variant,
                 finished_at=datetime.now(UTC)
                 if state.status in {"completed", "failed", "cancelled", "halted"}
                 else None,

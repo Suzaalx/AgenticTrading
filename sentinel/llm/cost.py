@@ -42,6 +42,7 @@ def record_cost(
     tokens_out: int,
     cost: Decimal | None = None,
     latency_ms: int = 0,
+    attempts: int = 1,
 ) -> Decimal:
     """Persist a single LLM cost row and return the cost written.
 
@@ -61,6 +62,7 @@ def record_cost(
             tokens_out=tokens_out,
             cost_usd=incurred,
             latency_ms=latency_ms,
+            attempts=attempts,
         ),
     )
     return incurred

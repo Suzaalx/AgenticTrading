@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +39,11 @@ class PipelineSettings(BaseSettings):
     # Ablation switch: false skips the bull/bear debate + research manager and routes analyst
     # outputs straight to the trader via a deterministic roll-up (no extra LLM call).
     debate_enabled: bool = True
+    # What writes the investment plan when the debate is off:
+    #   "rollup"           deterministic analyst roll-up, no LLM call (original ablation)
+    #   "research_manager" the same LLM judge, given the analyst reports but no debate
+    #                      transcript - isolates the debate itself, not the judge too
+    debate_off_planner: Literal["rollup", "research_manager"] = "rollup"
     # Bars of OHLCV + indicators rendered into the market-analyst prompt (SPEC default 90).
     # Free hosted tiers meter prompt + reserved max_tokens against a per-minute budget, so
     # the shipped config.toml lowers this; paid providers can restore 90.

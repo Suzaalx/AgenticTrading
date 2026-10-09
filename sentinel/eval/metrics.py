@@ -48,6 +48,8 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "avg_llm_latency_ms_per_decision",
     "avg_wall_ms_per_decision",
     "failed_decisions",
+    "first_pass_valid_rate",
+    "schema_failures",
     "notes",
 )
 
@@ -79,6 +81,8 @@ class ResultRow:
     avg_llm_latency_ms_per_decision: float
     avg_wall_ms_per_decision: float
     failed_decisions: int
+    first_pass_valid_rate: float = 1.0
+    schema_failures: int = 0
     notes: str = ""
     bt_id: str = ""
     equity_curve: list[dict[str, Any]] = field(default_factory=list, repr=False)
@@ -98,6 +102,14 @@ class DecisionCostSummary:
     total_tokens: int
     total_cost_usd: float
     total_llm_latency_ms: int
+    llm_calls: int = 0
+    first_pass_calls: int = 0
+
+    @property
+    def first_pass_valid_rate(self) -> float:
+        """Share of successful LLM calls whose first structured answer validated (no retry)."""
+
+        return (self.first_pass_calls / self.llm_calls) if self.llm_calls else 1.0
 
     def per_decision(self, decisions: int) -> tuple[float, float, float]:
         if decisions <= 0:
@@ -116,7 +128,9 @@ def decision_costs(conn: sqlite3.Connection, bt_id: str) -> DecisionCostSummary:
         """SELECT COUNT(DISTINCT run_id) AS decisions,
                   COALESCE(SUM(tokens_in + tokens_out), 0) AS tokens,
                   COALESCE(SUM(cost_usd), 0) AS cost,
-                  COALESCE(SUM(latency_ms), 0) AS latency
+                  COALESCE(SUM(latency_ms), 0) AS latency,
+                  COUNT(*) AS calls,
+                  COALESCE(SUM(CASE WHEN COALESCE(attempts, 1) <= 1 THEN 1 ELSE 0 END), 0) AS first_pass
            FROM costs WHERE run_id = ? OR run_id LIKE ?""",
         (bt_id, f"{bt_id}:%"),
     ).fetchone()
@@ -125,6 +139,8 @@ def decision_costs(conn: sqlite3.Connection, bt_id: str) -> DecisionCostSummary:
         total_tokens=int(row["tokens"] or 0),
         total_cost_usd=float(row["cost"] or 0.0),
         total_llm_latency_ms=int(row["latency"] or 0),
+        llm_calls=int(row["calls"] or 0),
+        first_pass_calls=int(row["first_pass"] or 0),
     )
 
 
@@ -182,6 +198,8 @@ def build_result_row(
         avg_llm_latency_ms_per_decision=avg_llm_latency,
         avg_wall_ms_per_decision=float(decision_summary.get("avg_wall_ms", 0.0)),
         failed_decisions=int(decision_summary.get("failed_decisions", 0)),
+        first_pass_valid_rate=costs.first_pass_valid_rate,
+        schema_failures=int(decision_summary.get("schema_failures", 0)),
         notes="; ".join(notes or []),
         bt_id=bt_id,
         equity_curve=list(result.equity_curve),
@@ -213,6 +231,7 @@ SUMMARY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("avg_llm_latency_ms_per_decision", "llm_ms/dec"),
     ("avg_wall_ms_per_decision", "wall_ms/dec"),
     ("failed_decisions", "failed"),
+    ("first_pass_valid_rate", "valid1st"),
     ("notes", "notes"),
 )
 
@@ -238,12 +257,13 @@ def format_results_table(rows: list[ResultRow]) -> str:
                 f"{row.avg_llm_latency_ms_per_decision:.0f}",
                 f"{row.avg_wall_ms_per_decision:.0f}",
                 str(row.failed_decisions),
+                _pct(row.first_pass_valid_rate) if row.decisions and row.total_tokens else "-",
                 row.notes[:80],
             ]
         )
     headers = [label for _, label in SUMMARY_COLUMNS]
     widths = [max(len(headers[i]), *(len(line[i]) for line in cells)) if cells else len(headers[i]) for i in range(len(headers))]
-    left = {0, 1, 2, 14}
+    left = {0, 1, 2, 15}
 
     def fmt(values: list[str]) -> str:
         return "  ".join(
@@ -271,7 +291,7 @@ def row_from_record(record: dict[str, Any]) -> ResultRow:
         if column not in record:
             continue
         value = record[column]
-        if column in {"bars", "decisions", "signals", "round_trips", "total_tokens", "failed_decisions"}:
+        if column in {"bars", "decisions", "signals", "round_trips", "total_tokens", "failed_decisions", "schema_failures"}:
             coerced[column] = int(value or 0)
         elif column in {"experiment", "pipeline", "config", "symbol", "start", "end", "notes"}:
             coerced[column] = str(value or "")

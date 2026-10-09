@@ -97,7 +97,7 @@ async def test_experiment_runs_all_pipelines_on_identical_bars_and_writes_table(
     assert off_config["debate_enabled"] is False and off_config["cadence"] == "weekly"
     assert set(off_config["llm"]) == {
         "provider", "quick_model", "deep_model", "role_models", "analyst_history_bars", "max_debate_rounds",
-        "max_position_pct_equity",
+        "max_position_pct_equity", "debate_off_planner",
     }
     assert off_config["llm"]["max_position_pct_equity"] == 10.0
     # Cost metering is derived from the experiment DB, keyed per bt_id.

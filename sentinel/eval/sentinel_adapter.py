@@ -139,11 +139,13 @@ def summarize_traces(traces: list[DecisionTrace]) -> dict[str, Any]:
     decisions = len(traces)
     signals = sum(1 for trace in traces if trace.action != "HOLD")
     failures = sum(1 for trace in traces if trace.status == "failed" or trace.error)
+    schema_failures = sum(1 for trace in traces if (trace.error or "").startswith("SchemaParseError"))
     wall = [trace.wall_ms for trace in traces]
     return {
         "decisions": decisions,
         "signals": signals,
         "failed_decisions": failures,
+        "schema_failures": schema_failures,
         "avg_wall_ms": (sum(wall) / decisions) if decisions else 0.0,
     }
 

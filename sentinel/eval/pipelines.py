@@ -71,13 +71,19 @@ class PipelineSpec:
     build: Callable[[ExperimentContext, str], BuiltPipeline]
 
 
-def _build_sentinel(*, debate_enabled: bool) -> Callable[[ExperimentContext, str], BuiltPipeline]:
+def _build_sentinel(
+    *, debate_enabled: bool, debate_off_planner: str = "rollup"
+) -> Callable[[ExperimentContext, str], BuiltPipeline]:
     def build(ctx: ExperimentContext, symbol: str) -> BuiltPipeline:
         from sentinel.eval.sentinel_adapter import SentinelPipelineAdapter, summarize_traces
         from sentinel.orchestrator.runner import OrchestratorRunner
 
         settings = ctx.settings.model_copy(
-            update={"pipeline": ctx.settings.pipeline.model_copy(update={"debate_enabled": debate_enabled})}
+            update={
+                "pipeline": ctx.settings.pipeline.model_copy(
+                    update={"debate_enabled": debate_enabled, "debate_off_planner": debate_off_planner}
+                )
+            }
         )
         llm_config = {
             "provider": settings.llm.provider,
@@ -86,6 +92,7 @@ def _build_sentinel(*, debate_enabled: bool) -> Callable[[ExperimentContext, str
             "role_models": dict(settings.llm.role_models),
             "analyst_history_bars": settings.pipeline.analyst_history_bars,
             "max_debate_rounds": settings.pipeline.max_debate_rounds,
+            "debate_off_planner": None if debate_enabled else debate_off_planner,
             "max_position_pct_equity": ctx.mandate.max_position_pct_equity,
         }
         runner = OrchestratorRunner(
@@ -174,6 +181,16 @@ PIPELINES: dict[str, PipelineSpec] = {
         description="Sentinel pipeline with the research debate bypassed (deterministic analyst roll-up).",
         config={"debate_enabled": False},
         build=_build_sentinel(debate_enabled=False),
+    ),
+    "sentinel_debate_off_judge": PipelineSpec(
+        name="sentinel_debate_off_judge",
+        kind="agent",
+        description=(
+            "Sentinel with the research debate bypassed but the same LLM research manager "
+            "writing the plan from the analyst reports (fairer ablation: isolates the debate)."
+        ),
+        config={"debate_enabled": False, "debate_off_planner": "research_manager"},
+        build=_build_sentinel(debate_enabled=False, debate_off_planner="research_manager"),
     ),
     "sma_cross": PipelineSpec(
         name="sma_cross",

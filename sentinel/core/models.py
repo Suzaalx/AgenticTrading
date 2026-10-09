@@ -523,6 +523,7 @@ class RunState(SentinelModel):
     option_proposal: OptionStrategyProposal | None = None
     analyst_reports: dict[str, AgentReport] = Field(default_factory=dict)
     debate_enabled: bool = True
+    debate_variant: str = "on"  # "on" | "off_rollup" | "off_judge"
     debate_transcript: list[DebateTurn] = Field(default_factory=list)
     investment_plan: InvestmentPlan | None
     trade_proposal: TradeProposal | None

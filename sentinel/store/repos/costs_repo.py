@@ -18,14 +18,15 @@ class CostRecord:
     tokens_out: int
     cost_usd: Decimal
     latency_ms: int = 0
+    attempts: int = 1
 
 
 def insert_cost(conn: sqlite3.Connection, record: CostRecord) -> None:
     """Insert a cost row."""
 
     conn.execute(
-        "INSERT INTO costs (ts, run_id, agent, model, tokens_in, tokens_out, cost_usd, latency_ms) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO costs (ts, run_id, agent, model, tokens_in, tokens_out, cost_usd, latency_ms, attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             record.ts.isoformat(),
             record.run_id,
@@ -35,6 +36,7 @@ def insert_cost(conn: sqlite3.Connection, record: CostRecord) -> None:
             record.tokens_out,
             str(record.cost_usd),
             int(record.latency_ms),
+            int(record.attempts),
         ),
     )
     conn.commit()
@@ -57,6 +59,7 @@ def list_costs(conn: sqlite3.Connection, run_id: str | None = None) -> list[Cost
             tokens_out=int(row["tokens_out"]),
             cost_usd=Decimal(str(row["cost_usd"])),
             latency_ms=int(row["latency_ms"] or 0),
+            attempts=int(row["attempts"] or 1),
         )
         for row in rows
     ]

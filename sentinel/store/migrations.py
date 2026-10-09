@@ -67,5 +67,7 @@ EXPECTED_TABLES: tuple[str, ...] = (
 # existing ~/.sentinel databases pick them up without a manual migration step.
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("costs", "latency_ms", "INT"),
+    ("costs", "attempts", "INT"),
     ("runs", "debate_enabled", "INTEGER"),
+    ("runs", "debate_variant", "TEXT"),
 )
