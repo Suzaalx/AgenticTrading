@@ -18,6 +18,7 @@ class LLMResult[T]:
     output_tokens: int = 0
     model: str = "fake"
     latency_ms: int = 0
+    attempts: int = 1  # 2 = the first structured answer failed validation and was retried
 
 
 class StructuredLLM(Protocol):

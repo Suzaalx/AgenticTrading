@@ -86,6 +86,7 @@ class RiskDebater:
             tokens_out=result.output_tokens,
             cost=incurred,
             latency_ms=result.latency_ms,
+            attempts=result.attempts,
         )
         await self.bus.publish(
             CostIncurred(

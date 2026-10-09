@@ -25,6 +25,7 @@ from sentinel.agents.researchers import (
     BearResearcher,
     BullResearcher,
     ResearchManager,
+    ResearchManagerNoDebate,
     run_research_debate,
 )
 from sentinel.agents.risk_debaters import (
@@ -174,6 +175,7 @@ class OrchestratorGraph:
         max_debate_rounds: int | None = None,
         max_risk_rounds: int | None = None,
         debate_enabled: bool | None = None,
+        debate_off_planner: str | None = None,
         checkpoint: CheckpointCallback | None = None,
         cancel_check: CancelCheck | None = None,
     ) -> None:
@@ -191,6 +193,7 @@ class OrchestratorGraph:
         self.debate_enabled = (
             settings.pipeline.debate_enabled if debate_enabled is None else debate_enabled
         )
+        self.debate_off_planner = debate_off_planner or settings.pipeline.debate_off_planner
         self.checkpoint = checkpoint
         self.cancel_check = cancel_check or (lambda _run_id: False)
 
@@ -320,7 +323,7 @@ class OrchestratorGraph:
     async def _research_manager(self, state: RunState) -> None:
         state.status = "debating"
         await self._stage(state, "research_manager")
-        if not self.debate_enabled:
+        if not self.debate_enabled and self.debate_off_planner == "rollup":
             # Debate-off ablation: analyst outputs go straight to the trader through a
             # deterministic roll-up so the Trader/PM/risk contracts stay unchanged.
             plan = build_analyst_rollup_plan(state)
@@ -330,9 +333,11 @@ class OrchestratorGraph:
             self._rollup_costs(state)
             return
         lessons = self._recall_lessons(state)
+        # Debate off + planner "research_manager": same judge, no transcript.
+        planner = ResearchManager if self.debate_enabled else ResearchManagerNoDebate
         plan = cast(
             InvestmentPlan,
-            await ResearchManager(
+            await planner(
                 llm=self.llm,
                 bus=self.bus,
                 conn=self.conn,

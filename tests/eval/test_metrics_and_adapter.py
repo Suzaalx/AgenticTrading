@@ -142,3 +142,33 @@ def test_result_row_roundtrips_through_csv_and_record(tmp_path: Path) -> None:
 
     text = format_results_table([row])
     assert "Experiment e" in text and "failed boom" in text and "50.00%" in text
+
+
+def test_first_pass_validity_and_schema_failures_from_sqlite(tmp_path: Path) -> None:
+    from sentinel.eval.metrics import DecisionCostSummary
+    from sentinel.eval.sentinel_adapter import DecisionTrace, summarize_traces
+
+    conn = connect(tmp_path / "e.db")
+    run_migrations(conn)
+    for run_id, attempts in (("x__p__NVDA:d1", 1), ("x__p__NVDA:d1", 2), ("x__p__NVDA:d2", 1), ("x__p__NVDA:d2", 1)):
+        record_cost(conn, run_id=run_id, agent="trader", model="m", tokens_in=1, tokens_out=1, attempts=attempts)
+
+    summary = decision_costs(conn, "x__p__NVDA")
+    assert (summary.llm_calls, summary.first_pass_calls) == (4, 3)
+    assert summary.first_pass_valid_rate == 0.75
+    assert DecisionCostSummary(0, 0, 0.0, 0).first_pass_valid_rate is None  # not measured
+
+    traces = [
+        DecisionTrace("a", "d1", "HOLD", None, None, "failed", "SchemaParseError: missing quantity_pct", 1),
+        DecisionTrace("b", "d2", "HOLD", None, None, "failed", "RateLimitError: 429", 1),
+        DecisionTrace("c", "d3", "BUY", 0.05, "APPROVE", "portfolio_manager", None, 1),
+    ]
+    totals = summarize_traces(traces)
+    assert (totals["failed_decisions"], totals["schema_failures"]) == (2, 1)
+
+
+def test_new_columns_default_when_rebuilding_old_rows() -> None:
+    old = {c: 0 for c in RESULT_COLUMNS if c not in {"first_pass_valid_rate", "schema_failures"}}
+    old.update(experiment="e", pipeline="p", config="{}", symbol="NVDA", start="s", end="e", notes="")
+    row = row_from_record(old)
+    assert row.first_pass_valid_rate is None and row.schema_failures == 0

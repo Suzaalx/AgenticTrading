@@ -119,6 +119,7 @@ class ResearchDebater:
             tokens_out=result.output_tokens,
             cost=incurred,
             latency_ms=result.latency_ms,
+            attempts=result.attempts,
         )
         await self.bus.publish(
             CostIncurred(
@@ -285,6 +286,17 @@ def render_agent_reports(reports: Mapping[str, Any]) -> str:
         dump = report.model_dump(mode="json") if hasattr(report, "model_dump") else report
         blocks.append(f"#### {name}\n```json\n{dump}\n```")
     return "\n\n".join(blocks)
+
+
+class ResearchManagerNoDebate(ResearchManager):
+    """Debate-off ablation with the same judge.
+
+    Same agent name, model tier, analyst reports and output schema as ResearchManager; only
+    the bull/bear transcript is absent and the prompt says so. Comparing this against the
+    full pipeline isolates the debate itself.
+    """
+
+    prompt_template: ClassVar[str] = "research_manager_no_debate.md"
 
 
 def render_transcript(transcript: list[DebateTurn]) -> str:

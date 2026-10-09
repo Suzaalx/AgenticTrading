@@ -79,6 +79,7 @@ class LLMGateway:
             self.settings.llm.temperature if temperature is None else temperature
         )
         kwargs.setdefault("max_tokens", int(self.settings.llm.max_tokens))
+        provider_result: LLMResult[Any] | None = None
         try:
             provider_result = await self._call_provider_with_retries(
                 agent=agent,
@@ -106,7 +107,16 @@ class LLMGateway:
                     temperature=selected_temperature,
                     **kwargs,
                 )
-                return self._validated_result(retry_result, schema)
+                validated = self._validated_result(retry_result, schema)
+                # Meter both attempts: the rejected first answer still cost tokens and time.
+                first = provider_result
+                return dataclasses.replace(
+                    validated,
+                    attempts=2,
+                    input_tokens=validated.input_tokens + (first.input_tokens if first else 0),
+                    output_tokens=validated.output_tokens + (first.output_tokens if first else 0),
+                    latency_ms=validated.latency_ms + (first.latency_ms if first else 0),
+                )
             except (ValidationError, ValueError, TypeError) as second_error:
                 raise SchemaParseError(
                     f"Structured response failed validation after retry: {second_error}",
