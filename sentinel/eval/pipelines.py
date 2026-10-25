@@ -167,6 +167,43 @@ def _build_finrl(ctx: ExperimentContext, symbol: str) -> BuiltPipeline:
     return BuiltPipeline(kind="rule", strategy=strategy, summarize=summarize, notes=inner.notes)
 
 
+def _build_tradingagents(ctx: ExperimentContext, symbol: str) -> BuiltPipeline:
+    """TradingAgents on the same provider/models as the Sentinel rows of this experiment."""
+
+    from sentinel.eval.sentinel_adapter import summarize_traces
+    from sentinel.eval.tradingagents_adapter import (
+        TradingAgentsPipelineAdapter,
+        default_graph_factory,
+        tradingagents_config,
+    )
+
+    llm = ctx.settings.llm
+    params = dict(ctx.strategy_params or {})
+    rounds = int(params.get("ta_debate_rounds", 1))
+    factory = params.get("ta_graph_factory")  # tests inject a fake graph here
+    if factory is None:
+        workdir = ctx.spec.resolved_out_dir() / "tradingagents" / symbol.upper()
+        factory = default_graph_factory(
+            tradingagents_config(
+                provider=llm.provider, quick_model=llm.quick_model, deep_model=llm.deep_model,
+                workdir=workdir, max_debate_rounds=rounds, max_risk_rounds=rounds,
+            )
+        )
+    adapter = TradingAgentsPipelineAdapter(graph_factory=factory, symbol=symbol.upper(), mandate=ctx.mandate, conn=ctx.conn)
+    llm_config = {"provider": llm.provider, "quick_model": llm.quick_model, "deep_model": llm.deep_model,
+                  "debate_rounds": rounds, "max_position_pct_equity": ctx.mandate.max_position_pct_equity}
+
+    def summarize() -> dict[str, Any]:
+        return {**summarize_traces(adapter.traces), "llm": llm_config}
+
+    return BuiltPipeline(
+        kind="agent",
+        agent=adapter,
+        summarize=summarize,
+        notes=lambda: [f"{t.as_of}: {t.error}" for t in adapter.traces if t.error],
+    )
+
+
 PIPELINES: dict[str, PipelineSpec] = {
     "sentinel_debate_on": PipelineSpec(
         name="sentinel_debate_on",
@@ -205,6 +242,16 @@ PIPELINES: dict[str, PipelineSpec] = {
         description="Rule baseline: buy on the first bar and hold.",
         config={"strategy": "buy_hold"},
         build=_build_rule(_buy_hold),
+    ),
+    "tradingagents": PipelineSpec(
+        name="tradingagents",
+        kind="agent",
+        description=(
+            "TradingAgents (Xiao et al., 2024), unmodified, on the same LLM provider/models as the "
+            "Sentinel rows; 5-tier rating mapped to the mandate allowance. Needs `uv sync --extra tradingagents`."
+        ),
+        config={"system": "tradingagents"},
+        build=_build_tradingagents,
     ),
     "finrl": PipelineSpec(
         name="finrl",

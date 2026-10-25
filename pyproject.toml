@@ -35,6 +35,9 @@ rl = [
     "stable-baselines3>=2.3",
     "torch>=2.2",
 ]
+tradingagents = [
+    "tradingagents",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -69,3 +72,6 @@ include = ["sentinel"]
 strict = ["sentinel/risk", "sentinel/execution"]
 typeCheckingMode = "basic"
 reportMissingTypeStubs = false
+
+[tool.uv.sources]
+tradingagents = { git = "https://github.com/TauricResearch/TradingAgents", rev = "e8f5503" }
