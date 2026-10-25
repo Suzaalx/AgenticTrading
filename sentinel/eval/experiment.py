@@ -237,7 +237,11 @@ async def _run_one(
         "cadence": spec.cadence if built.kind == "agent" else "daily",
     }
     if built.kind == "rule" and spec.strategy_params:
-        row_config["strategy_params"] = {k: str(v) if isinstance(v, Path) else v for k, v in spec.strategy_params.items()}
+        row_config["strategy_params"] = {
+            k: str(v) if isinstance(v, Path) else v
+            for k, v in spec.strategy_params.items()
+            if not callable(v)  # injected factories (tests) aren't data
+        }
     for key in ("policy", "stub", "llm", "reused_decisions"):
         if key in decision_summary:
             row_config[key] = decision_summary[key]
