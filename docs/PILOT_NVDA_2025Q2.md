@@ -87,6 +87,33 @@ Reading it:
 - "first-pass valid" = share of LLM calls whose first structured answer validated (new in PR #7);
   older runs predate the column.
 
+### TradingAgents vs. Sentinel, same free model (2026-10-27, PR #9)
+
+Both on Gemini free tier `gemini-3.5-flash-lite` (Groq can't run TradingAgents: one request is
+12.3k tokens > 8k TPM). Experiment `ta_flashlite_nvda`; same window, engine, 10% position cap.
+
+| pipeline | return | Sharpe | max DD | fills | tok/dec | wall/dec | failed | first-pass valid |
+|---|---|---|---|---|---|---|---|---|
+| tradingagents (1 debate + 1 risk round) | +1.19% | 1.46 | -1.27% | 3 | 139,565 | 113 s | 0/13 | 100% |
+| sentinel_debate_on | 0.00% | - | 0.00% | 0 | 21,485 | 41 s | 0/13 | 100% |
+| sentinel_debate_off_judge | 3/13 decisions; daily 500-request limit hit, finish with `--resume` | | | | | | | |
+
+Reading it:
+- TradingAgents rated **Overweight all 13 weeks** -> target 5% of equity, so it held ~5% NVDA and
+  only rebalanced. 18–27 LLM calls and 80k–241k tokens per decision (~6.5x Sentinel).
+- Sentinel on flash-lite: 4 bearish (conviction 70–75) + 9 neutral plans, long-only with no
+  position, so 13 HOLDs. On gpt-oss-120b it bought 3 times: the base model matters.
+- Information is not equal: TradingAgents fetches fundamentals (SEC EDGAR) and news and keeps a
+  memory log; Sentinel's replay has prices/indicators only. Its 2025-05-28 decision quotes the
+  quarter NVIDIA reported after that day's close (possible same-day leak, to check).
+
+```
+SENTINEL_LLM__PROVIDER=gemini uv run --extra tradingagents sentinel eval run \
+  -p tradingagents -p sentinel_debate_on -p sentinel_debate_off_judge -s NVDA \
+  --start 2025-03-03 --end 2025-05-30 --model gemini-3.5-flash-lite \
+  --experiment ta_flashlite_nvda --resume
+```
+
 ### Harness validation dry-run (real NVDA bars, `FakeLLM` standing in for Groq)
 
 Run to prove the plumbing on real data without spending free-tier quota. The FakeLLM
