@@ -19,7 +19,9 @@ Install with ``uv sync --extra tradingagents``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -32,14 +34,19 @@ from sentinel.core.models import DataSnapshot, Mandate, OptionChainSnapshot, Sig
 from sentinel.eval.sentinel_adapter import DecisionTrace
 from sentinel.llm.cost import cost_usd, record_cost
 
+logger = logging.getLogger(__name__)
+
 # Sentinel provider name -> (TradingAgents provider name, env var TradingAgents reads for the key)
 PROVIDER_MAP: dict[str, tuple[str, str | None]] = {
     "groq": ("groq", "GROQ_API_KEY"),
+    # Native client: Gemini 3 tool calls need thought signatures that Google's
+    # OpenAI-compatible endpoint drops between turns (HTTP 400 on the second tool call).
     "gemini": ("google", "GOOGLE_API_KEY"),
     "ollama": ("ollama", None),
     "openai": ("openai", "OPENAI_API_KEY"),
     "anthropic": ("anthropic", "ANTHROPIC_API_KEY"),
 }
+TIMEOUT_KEY = "sentinel_request_timeout"  # our key; TradingAgents ignores unknown config keys
 # Share of the mandate allowance (max_position_pct_equity) each rating buys or sells.
 RATING_ACTIONS: dict[str, tuple[str, float]] = {
     "buy": ("BUY", 1.0),
@@ -74,7 +81,9 @@ def tradingagents_config(
     workdir: Path,
     max_debate_rounds: int = 1,
     max_risk_rounds: int = 1,
-    max_retries: int = 12,
+    max_retries: int = 8,
+    request_timeout: float = 120.0,
+    max_tokens: int | None = 4096,
 ) -> dict[str, Any]:
     """Build a TradingAgents config from Sentinel's LLM settings (same models, isolated files)."""
 
@@ -94,12 +103,65 @@ def tradingagents_config(
         max_debate_rounds=max_debate_rounds,
         max_risk_discuss_rounds=max_risk_rounds,
         llm_max_retries=max_retries,
+        max_tokens=max_tokens,
         checkpoint_enabled=False,
         results_dir=str(workdir / "results"),
         data_cache_dir=str(workdir / "cache"),
         memory_log_path=str(workdir / "memory" / "trading_memory.md"),
     )
+    config[TIMEOUT_KEY] = request_timeout
     return config
+
+
+_RETRY_DELAY = re.compile(r"retry(?:Delay\W+|\s+in\s+)(\d+(?:\.\d+)?)s", re.IGNORECASE)
+
+
+def _rate_limit_wait(response: Any, attempt: int) -> float:
+    """Seconds to wait after a 429: Retry-After, else Google's body ``retryDelay``, else backoff."""
+
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return float(header) + 1.0
+        except ValueError:
+            pass
+    match = _RETRY_DELAY.search(response.text or "")
+    if match:
+        return float(match.group(1)) + 1.0
+    return min(60.0, 5.0 * 2**attempt)
+
+
+def rate_limit_patient_client(
+    *, timeout: float, max_waits: int = 8, sleep: Callable[[float], None] = time.sleep, inner: Any = None
+) -> Any:
+    """httpx client that waits out free-tier 429s for as long as the provider asks.
+
+    The OpenAI SDK's own backoff tops out at a few seconds, far shorter than the
+    ~30-60 s Gemini asks for once a per-minute token quota is spent.
+    """
+
+    import httpx
+
+    base = inner or httpx.HTTPTransport()
+
+    class PatientTransport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            attempt = 0
+            while True:
+                response = base.handle_request(request)
+                if response.status_code != 429 or attempt >= max_waits:
+                    return response
+                response.read()
+                wait = _rate_limit_wait(response, attempt)
+                response.close()
+                logger.warning("TradingAgents rate-limited (429); waiting %.0fs (attempt %d/%d)", wait, attempt + 1, max_waits)
+                sleep(wait)
+                attempt += 1
+
+        def close(self) -> None:
+            base.close()
+
+    return httpx.Client(transport=PatientTransport(), timeout=timeout)
 
 
 class _CostMeter:
@@ -221,8 +283,26 @@ def default_graph_factory(config: dict[str, Any]) -> Callable[[list[Any]], Any]:
     """Factory building the real ``TradingAgentsGraph`` with our metering callbacks."""
 
     def build(callbacks: list[Any]) -> Any:
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
+        from tradingagents.graph import trading_graph
 
-        return TradingAgentsGraph(debug=False, config=config, callbacks=callbacks)
+        # TradingAgents has no timeout setting; inject one into both tier clients so a
+        # stalled request fails (and retries) instead of hanging the experiment. Google's
+        # SDK already backs off on 429 (up to 60 s per wait); OpenAI-family SDKs give up
+        # after a few seconds, so they get a transport that waits as long as asked.
+        original = trading_graph.create_tier_client
+        timeout = config.get(TIMEOUT_KEY)
+
+        def with_timeout(cfg: dict[str, Any], tier: str, **extra: Any) -> Any:
+            if timeout:
+                extra.setdefault("timeout", timeout)
+                if trading_graph.tier_provider(cfg, tier) not in {"google", "anthropic"}:
+                    extra.setdefault("http_client", rate_limit_patient_client(timeout=timeout))
+            return original(cfg, tier, **extra)
+
+        trading_graph.create_tier_client = with_timeout
+        try:
+            return trading_graph.TradingAgentsGraph(debug=False, config=config, callbacks=callbacks)
+        finally:
+            trading_graph.create_tier_client = original
 
     return build

@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import re
 import time
 from typing import Any, Literal, TypeVar
 
@@ -19,6 +20,8 @@ Tier = Literal["quick", "deep"]
 
 RATE_LIMIT_MAX_RETRIES = 6
 RATE_LIMIT_MAX_SLEEP_SECONDS = 90.0
+# Gemini puts the wait in the error body ("retryDelay": "34s" / "Please retry in 34.7s").
+_BODY_RETRY_DELAY = re.compile(r"retry(?:Delay\W+|\s+in\s+)(\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 # Free / open-weight backends served through the OpenAI-compatible adapter.
 OPEN_WEIGHT_PROVIDERS: frozenset[str] = frozenset({"groq", "gemini", "ollama"})
@@ -251,4 +254,7 @@ def _retry_after_seconds(exc: Exception, attempt: int) -> float:
                 return min(max(float(raw), 0.5), RATE_LIMIT_MAX_SLEEP_SECONDS)
         except (TypeError, ValueError):
             pass
+    match = _BODY_RETRY_DELAY.search(str(exc))
+    if match:
+        return min(float(match.group(1)) + 1.0, RATE_LIMIT_MAX_SLEEP_SECONDS)
     return min(2.0 ** attempt, RATE_LIMIT_MAX_SLEEP_SECONDS)

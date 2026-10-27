@@ -171,3 +171,14 @@ async def test_gateway_gives_up_after_too_many_rate_limits(monkeypatch: pytest.M
     with pytest.raises(_RateLimited):
         await gateway.complete_structured("t", "p", SamplePayload)
     assert provider.calls == gateway_module.RATE_LIMIT_MAX_RETRIES + 1
+
+
+def test_retry_after_reads_gemini_body_delay() -> None:
+    from sentinel.llm.gateway import _retry_after_seconds
+
+    class GeminiQuota(Exception):
+        status_code = 429
+
+    exc = GeminiQuota("Error code: 429 - Quota exceeded ... Please retry in 34.71s. ... 'retryDelay': '34s'")
+    assert _retry_after_seconds(exc, 1) == pytest.approx(35.71)
+    assert _retry_after_seconds(GeminiQuota("no hint"), 3) == 8.0

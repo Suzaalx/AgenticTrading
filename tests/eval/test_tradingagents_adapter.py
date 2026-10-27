@@ -106,7 +106,26 @@ def test_config_maps_providers_and_isolates_files(tmp_path: Path, monkeypatch: p
     import os
 
     assert cfg["llm_provider"] == "google" and os.environ["GOOGLE_API_KEY"] == "g-test"
+    assert cfg["sentinel_request_timeout"] == 120.0 and cfg["llm_max_retries"] == 8
     assert cfg["memory_log_path"].startswith(str(tmp_path)) and cfg["results_dir"].startswith(str(tmp_path))
     assert cfg["checkpoint_enabled"] is False
     with pytest.raises(ValueError, match="no mapping"):
         tradingagents_config(provider="mystery", quick_model="m", deep_model="m", workdir=tmp_path)
+
+
+def test_patient_client_waits_out_rate_limits() -> None:
+    import httpx
+
+    from sentinel.eval.tradingagents_adapter import rate_limit_patient_client
+
+    body = '{"error": {"code": 429, "message": "Quota exceeded. Please retry in 34.7s.", "details": [{"retryDelay": "34s"}]}}'
+    replies = [httpx.Response(429, text=body), httpx.Response(429, headers={"retry-after": "3"}), httpx.Response(200, text="ok")]
+    slept: list[float] = []
+    client = rate_limit_patient_client(timeout=5, sleep=slept.append,
+                                       inner=httpx.MockTransport(lambda request: replies.pop(0)))
+    assert client.get("https://example.invalid/").text == "ok"
+    assert slept == [35.7, 4.0]
+
+    stubborn = rate_limit_patient_client(timeout=5, max_waits=2, sleep=slept.append,
+                                         inner=httpx.MockTransport(lambda request: httpx.Response(429)))
+    assert stubborn.get("https://example.invalid/").status_code == 429  # gives up after max_waits
